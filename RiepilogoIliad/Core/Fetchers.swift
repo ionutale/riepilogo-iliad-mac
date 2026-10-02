@@ -14,6 +14,13 @@ protocol HTMLFetcher: Sendable {
 /// configuration's own storage is deliberately ignored in favour of the
 /// per-fetch one.
 struct HTTPFetcher: HTMLFetcher {
+    /// Bound on how many redirects one request will follow before it is called a
+    /// loop. Iliad's `http`↔`https` loop (spec §2) is infinite by nature, so
+    /// without a bound a blocked network would spin until the 20s timeout of
+    /// whichever hop happened to be in flight — and the "redirect loop" that the
+    /// Safari fallback exists for would never actually be reported as one.
+    static let maxRedirectHops = 5
+
     let baseURL: URL
     let timeout: TimeInterval
     let configuration: URLSessionConfiguration
@@ -49,11 +56,13 @@ struct HTTPFetcher: HTMLFetcher {
         let session = URLSession(configuration: config)
         defer { session.invalidateAndCancel() }
 
-        // Explicit cookie propagation for the login -> consumi hop. The
-        // per-fetch storage above handles the real network path; storage-based
-        // injection never runs when a custom URLProtocol is in play (the test
-        // double bypasses URLSession's cookie machinery entirely), so the
-        // session cookie is also carried explicitly here. Scoped to this call.
+        // Redirects are followed by `send(_:session:jar:)`, not by URLSession,
+        // so that every hop's `Set-Cookie` can be absorbed into this jar before
+        // the next hop is issued. The Go reference relies on the equivalent
+        // property of `http.Client` (its `Jar` records the cookie of *every*
+        // response, redirects included); matching that here is what makes a
+        // portal that only sets the session cookie on the second hop work
+        // instead of failing every SIM with a false "credenziali non valide".
         let cookies = CookieJar()
 
         var form = URLComponents()
@@ -68,13 +77,15 @@ struct HTTPFetcher: HTMLFetcher {
         login.httpBody = form.percentEncodedQuery?.data(using: .utf8)
 
         do {
-            let (_, response) = try await session.data(for: login, delegate: NoRedirectDelegate.shared)
-            guard let http = response as? HTTPURLResponse else {
-                throw IliadError.network("login: risposta non HTTP")
+            let (response, _) = try await send(login, session: session, jar: cookies, stage: "login")
+            guard response.statusCode < 400 else {
+                throw IliadError.network("login HTTP \(response.statusCode)")
             }
-            cookies.absorb(from: http, for: login.url ?? baseURL)
-            guard http.statusCode < 400 else {
-                throw IliadError.network("login HTTP \(http.statusCode)")
+            // The post-login redirect lands on the account page; if it lands back
+            // on the login form the credentials were rejected. Go makes the same
+            // check on the *final* URL of the chain (`resp.Request.URL.Path`).
+            if response.url?.path == "/account/login" {
+                throw IliadError.auth("credenziali non valide o sessione non autenticata")
             }
         } catch let error as IliadError {
             throw error
@@ -84,16 +95,13 @@ struct HTTPFetcher: HTMLFetcher {
 
         var consumi = URLRequest(url: baseURL.appendingPathComponent("/account/consumi-e-credito"))
         consumi.setValue(browserUserAgent, forHTTPHeaderField: "User-Agent")
-        if let cookieHeader = cookies.headerValue {
-            consumi.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
-        }
         do {
-            let (data, response) = try await session.data(for: consumi)
-            guard let http = response as? HTTPURLResponse, http.statusCode < 400 else {
-                throw IliadError.network("consumi HTTP \((response as? HTTPURLResponse)?.statusCode ?? -1)")
+            let (response, data) = try await send(consumi, session: session, jar: cookies, stage: "consumi")
+            guard response.statusCode < 400 else {
+                throw IliadError.network("consumi HTTP \(response.statusCode)")
             }
             let page = String(decoding: data, as: UTF8.self)
-            if http.url?.path == "/account/login" || page.contains("name=\"login-ident\"") {
+            if response.url?.path == "/account/login" || page.contains("name=\"login-ident\"") {
                 throw IliadError.auth("credenziali non valide o sessione non autenticata")
             }
             return page
@@ -103,12 +111,91 @@ struct HTTPFetcher: HTMLFetcher {
             throw IliadError.network("consumi: \(error.localizedDescription)")
         }
     }
+
+    /// Issues one request and follows its redirect chain by hand, absorbing each
+    /// hop's `Set-Cookie` into `jar` before the next request so the session
+    /// cookie travels the whole way.
+    ///
+    /// The loop is here — rather than left to URLSession — for a second reason:
+    /// the redirect suppression below only runs when a real `URLSession` stack
+    /// asks its delegate about a redirect, and a custom `URLProtocol` (the test
+    /// double) never does. A hand-rolled chain behaves identically in tests and
+    /// in production, so the redirect semantics are actually covered rather than
+    /// assumed.
+    private func send(_ request: URLRequest, session: URLSession, jar: CookieJar,
+                      stage: String) async throws -> (HTTPURLResponse, Data) {
+        var current = request
+        for hop in 0...Self.maxRedirectHops {
+            if let cookieHeader = jar.headerValue {
+                current.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
+            }
+            let data: Data
+            let response: URLResponse
+            do {
+                (data, response) = try await session.data(for: current, delegate: NoRedirectDelegate.shared)
+            } catch {
+                throw IliadError.network("\(stage): \(error.localizedDescription)")
+            }
+            guard let http = response as? HTTPURLResponse else {
+                throw IliadError.network("\(stage): risposta non HTTP")
+            }
+            // Absorb before deciding what to do next: a 302 can be the hop that
+            // actually establishes the session.
+            jar.absorb(from: http, for: current.url ?? baseURL)
+            guard http.statusCode != 304 else {
+                throw IliadError.network("\(stage): HTTP 304")
+            }
+            guard Self.isRedirect(http.statusCode) else {
+                return (http, data)
+            }
+            guard hop < Self.maxRedirectHops else {
+                throw IliadError.network("\(stage): loop di redirect oltre \(Self.maxRedirectHops) hop")
+            }
+            guard let next = Self.followingRequest(from: current, response: http) else {
+                throw IliadError.network("\(stage): redirect \(http.statusCode) senza Location valido")
+            }
+            current = next
+        }
+        // Unreachable: the loop returns or throws on its final iteration.
+        throw IliadError.network("\(stage): catena di redirect non risolta")
+    }
+
+    private static func isRedirect(_ status: Int) -> Bool {
+        switch status {
+        case 301, 302, 303, 307, 308: true
+        default: false
+        }
+    }
+
+    /// The next hop of a redirect chain. Method rewriting follows RFC 9110 (and
+    /// Go's `http.Client`): 303 — and 301/302 for a POST, which is the only
+    /// method this fetcher issues for login — continue as a GET, while 307/308
+    /// repeat method and body.
+    static func followingRequest(from request: URLRequest,
+                                 response: HTTPURLResponse) -> URLRequest? {
+        guard let location = response.value(forHTTPHeaderField: "Location"),
+              let target = URL(string: location, relativeTo: request.url)?.absoluteURL else {
+            return nil
+        }
+        var next = request
+        next.url = target
+        let method = request.httpMethod?.uppercased() ?? "GET"
+        if response.statusCode == 303 || ((response.statusCode == 301 || response.statusCode == 302)
+                                           && method == "POST") {
+            next.httpMethod = "GET"
+            next.httpBody = nil
+            next.setValue(nil, forHTTPHeaderField: "Content-Length")
+            next.setValue(nil, forHTTPHeaderField: "Content-Type")
+        }
+        return next
+    }
 }
 
-/// Used on the login POST: stops URLSession from internally following the
-/// post-login redirect with a request that bypasses our cookie propagation.
-/// The consumi GET keeps normal redirect handling so an unauthenticated
-/// session that bounces to `/account/login` is still detected.
+/// Stops URLSession from following redirects internally on the fetcher's behalf.
+/// The redirect chain is followed by `HTTPFetcher.send(_:session:jar:)` instead,
+/// so each hop's `Set-Cookie` is absorbed into the per-fetch jar before the next
+/// request is issued — URLSession's internal following would issue the next hop
+/// from storage state we do not control.
 private final class NoRedirectDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     static let shared = NoRedirectDelegate()
 
@@ -121,7 +208,9 @@ private final class NoRedirectDelegate: NSObject, URLSessionTaskDelegate, @unche
 }
 
 /// Minimal per-fetch cookie jar parsed from `Set-Cookie` response headers.
-private final class CookieJar: @unchecked Sendable {
+/// Accumulates across every hop of the login chain and is discarded with the
+/// fetch, so nothing leaks into another account's session.
+final class CookieJar: @unchecked Sendable {
     private let lock = NSLock()
     private var storage: [HTTPCookie] = []
 
