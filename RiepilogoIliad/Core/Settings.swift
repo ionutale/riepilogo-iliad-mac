@@ -1,6 +1,13 @@
 import Foundation
 import Observation
 
+/// Refresh-interval choices offered in Settings, in seconds. Shared with
+/// `snapRefreshInterval` so an interval imported from the Go `config.yaml`
+/// always lands on a value the picker can show — a `Picker` bound to a value
+/// outside its tag list displays no selection at all. The first entry is the
+/// one-hour floor `AppSettings.refreshInterval` enforces.
+let refreshIntervalTags: [TimeInterval] = [1, 2, 4, 6, 8, 12, 24].map { $0 * 3600 }
+
 /// UserDefaults-backed app settings. Accounts are JSON; passwords are Keychain.
 @MainActor
 @Observable

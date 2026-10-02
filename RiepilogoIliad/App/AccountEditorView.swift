@@ -39,7 +39,7 @@ struct AccountEditorView: View {
     }
 
     private func save() {
-        let credentials = KeychainCredentialStore()
+        let accountID: UUID
         if var existing = account {
             existing.name = name
             existing.username = username
@@ -47,12 +47,21 @@ struct AccountEditorView: View {
             if let index = model.settings.accounts.firstIndex(where: { $0.id == existing.id }) {
                 model.settings.accounts[index] = existing
             }
-            try? credentials.setPassword(password, for: existing.id)
+            accountID = existing.id
         } else {
             let new = Account(name: name, username: username,
                               renewalDay: renewalDay == 0 ? nil : renewalDay)
             model.settings.accounts.append(new)
-            try? credentials.setPassword(password, for: new.id)
+            accountID = new.id
+        }
+        // An empty field means "leave the stored password alone": the editor
+        // only pre-fills it when the Keychain read succeeded, so writing the
+        // blank field back would destroy a working credential over a display
+        // hiccup. A SIM with no password at all keeps no Keychain item, which
+        // "Verifica account" reports as a missing password rather than as an
+        // authentication failure.
+        if !password.isEmpty {
+            try? KeychainCredentialStore().setPassword(password, for: accountID)
         }
         dismiss()
     }

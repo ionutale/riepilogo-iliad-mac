@@ -13,7 +13,7 @@ struct EditingAccount: Identifiable {
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
     @State private var editing: EditingAccount?
-    @State private var checkResults: [CheckResult]?
+    @State private var checkResults: CheckResultsBox?
     @State private var importMessage: String?
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
 
@@ -38,11 +38,9 @@ struct SettingsView: View {
 
             Section("Aggiornamento") {
                 Picker("Intervallo", selection: Bindable(model.settings).refreshInterval) {
-                    Text("1 ora").tag(TimeInterval(3600))
-                    Text("2 ore").tag(TimeInterval(7200))
-                    Text("4 ore").tag(TimeInterval(14400))
-                    Text("8 ore").tag(TimeInterval(28800))
-                    Text("24 ore").tag(TimeInterval(86400))
+                    ForEach(refreshIntervalTags, id: \.self) { seconds in
+                        Text(hoursLabel(seconds)).tag(seconds)
+                    }
                 }
                 Picker("Modalità", selection: Bindable(model.settings).fetchMode) {
                     ForEach(FetchMode.allCases, id: \.self) { Text($0.label).tag($0) }
@@ -67,7 +65,7 @@ struct SettingsView: View {
 
             Section("Diagnostica") {
                 Button("Verifica account") {
-                    Task { checkResults = await model.coordinator.checkAccounts() }
+                    Task { checkResults = CheckResultsBox(results: await model.coordinator.checkAccounts()) }
                 }
                 Button("Importa account da config.yaml") { importAccountsFromFile() }
                 Button("Importa storico da iliad.db") { importHistoryFromFile() }
@@ -82,11 +80,14 @@ struct SettingsView: View {
             AccountEditorView(account: editing.account)
                 .environment(model)
         }
-        .sheet(item: Binding(
-            get: { checkResults.map(CheckResultsBox.init) },
-            set: { if $0 == nil { checkResults = nil } })) { box in
+        .sheet(item: $checkResults) { box in
             CheckResultsView(results: box.results).environment(model)
         }
+    }
+
+    private func hoursLabel(_ seconds: TimeInterval) -> String {
+        let hours = Int(seconds / 3600)
+        return "\(hours) \(hours == 1 ? "ora" : "ore")"
     }
 
     private func remove(_ account: Account) {
@@ -97,16 +98,36 @@ struct SettingsView: View {
     private func importAccountsFromFile() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.yaml]
-        guard panel.runModal() == .OK, let url = panel.url,
-              let yaml = try? String(contentsOf: url, encoding: .utf8),
-              let imported = try? importAccounts(fromYAML: yaml) else { return }
-        let credentials = KeychainCredentialStore()
-        for item in imported {
-            let account = Account(name: item.name, username: item.username, renewalDay: item.renewalDay)
-            model.settings.accounts.append(account)
-            try? credentials.setPassword(item.password, for: account.id)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let yaml = try String(contentsOf: url, encoding: .utf8)
+            let merge = mergeImportedAccounts(existing: model.settings.accounts,
+                                              imported: try importAccounts(fromYAML: yaml))
+            for update in merge.passwords {
+                try? KeychainCredentialStore().setPassword(update.password, for: update.id)
+            }
+            model.settings.accounts = merge.accounts
+
+            // The interval is imported too (the Go config's `refresh_interval`),
+            // but a bad value must not throw away the accounts just imported:
+            // it is reported next to the counts instead.
+            var interval: TimeInterval?
+            var intervalIgnored = false
+            do {
+                interval = try importRefreshInterval(fromYAML: yaml)
+            } catch {
+                intervalIgnored = true
+            }
+            if let interval { model.settings.refreshInterval = interval }
+
+            var message = importSummary(merge, interval: interval)
+            if intervalIgnored { message += " Intervallo ignorato: non valido." }
+            importMessage = message
+        } catch {
+            // Never the raw error: a decoding failure quotes the YAML it failed
+            // on, and that YAML holds the passwords.
+            importMessage = "Import non riuscito: file non valido"
         }
-        importMessage = "Importate \(imported.count) SIM."
     }
 
     private func importHistoryFromFile() {
@@ -119,15 +140,22 @@ struct SettingsView: View {
               let destination = try? Store.defaultURL() else { return }
         do {
             try importDatabase(from: url, to: destination)
-            importMessage = "Storico importato. Riavvia l'app per vederlo."
+            // Quitting is the instruction, not restarting: the app's open connection stops
+            // working the moment the file is swapped (its reads fail with a disk
+            // I/O error until it starts again), and the backup is the user's way
+            // back if the file they picked was wrong.
+            importMessage = "Storico importato (il precedente è in iliad.db.bak). Esci e riapri l'app."
         } catch {
-            importMessage = "Import non riuscito: \(error.localizedDescription)"
+            let reason = (error as? ImportError)?.errorDescription ?? "file non valido"
+            importMessage = "Import non riuscito: \(reason)"
         }
     }
 }
 
 /// Identifiable box so the check results can drive `sheet(item:)`: an empty
-/// result set would otherwise be indistinguishable from "no sheet".
+/// result set would otherwise be indistinguishable from "no sheet". The
+/// identity is fixed when the results are assigned, so re-reading the sheet's
+/// binding cannot restart the sheet under the user.
 struct CheckResultsBox: Identifiable {
     let id = UUID()
     let results: [CheckResult]
