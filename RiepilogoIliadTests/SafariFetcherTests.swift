@@ -79,4 +79,26 @@ final class SafariFetcherTests: XCTestCase {
             XCTFail("got \(error)")
         }
     }
+
+    /// `delay 30` needs no Apple Events permission and touches no application,
+    /// so cancelling after half a second must tear the child down promptly.
+    /// Bounded by `fulfillment(timeout:)` so a regression fails instead of
+    /// hanging. Only "it throws" is asserted — the message is not part of the
+    /// contract (an `.network` error is fine).
+    func testDefaultRunnerTerminatesOnCancellation() async throws {
+        let finished = expectation(description: "runner returns after cancellation")
+        let thrown = Box<Error?>(nil)
+        let task = Task {
+            do {
+                _ = try await SafariFetcher.defaultRunner("delay 30", [])
+            } catch {
+                thrown.value = error
+            }
+            finished.fulfill()
+        }
+        try await Task.sleep(for: .milliseconds(500))
+        task.cancel()
+        await fulfillment(of: [finished], timeout: 10)
+        XCTAssertNotNil(thrown.value, "expected the runner to throw when cancelled")
+    }
 }

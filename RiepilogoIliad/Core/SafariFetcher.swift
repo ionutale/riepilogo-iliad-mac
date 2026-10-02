@@ -84,34 +84,113 @@ struct SafariFetcher: HTMLFetcher {
         """
     }
 
+    /// Hard cap on a single osascript run.
+    private static let runnerTimeout: TimeInterval = 60
+
     /// Runs osascript with the script and the JS as an argument.
+    ///
+    /// The run is bounded so a wedged osascript — a Safari modal dialog, an
+    /// automation prompt, a blocked `delay` — cannot stall a refresh forever:
+    /// the child is terminated after `Self.runnerTimeout` seconds, and
+    /// immediately when the calling task is cancelled. Cancellation before the
+    /// process even starts fails fast without spawning one.
     static let defaultRunner: ScriptRunner = { script, args in
-        try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global().async {
-                let process = Process()
-                process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-                process.arguments = ["-e", script, "--"] + args
-                let stdout = Pipe()
-                let stderr = Pipe()
-                process.standardOutput = stdout
-                process.standardError = stderr
-                do {
-                    try process.run()
-                } catch {
-                    continuation.resume(throwing: IliadError.network("osascript: \(error.localizedDescription)"))
+        let limit = Self.runnerTimeout
+        let box = ProcessBox()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                if Task.isCancelled {
+                    continuation.resume(throwing: CancellationError())
                     return
                 }
-                let outData = stdout.fileHandleForReading.readDataToEndOfFile()
-                let errData = stderr.fileHandleForReading.readDataToEndOfFile()
-                process.waitUntilExit()
-                if process.terminationStatus != 0 {
-                    let message = String(data: errData, encoding: .utf8)?
-                        .trimmingCharacters(in: .whitespacesAndNewlines) ?? "exit \(process.terminationStatus)"
-                    continuation.resume(throwing: IliadError.network(message))
-                    return
+                DispatchQueue.global().async {
+                    let process = Process()
+                    process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+                    process.arguments = ["-e", script, "--"] + args
+                    let stdout = Pipe()
+                    let stderr = Pipe()
+                    process.standardOutput = stdout
+                    process.standardError = stderr
+                    do {
+                        try process.run()
+                    } catch {
+                        continuation.resume(throwing: IliadError.network("osascript: \(error.localizedDescription)"))
+                        return
+                    }
+                    // Adopting the process also covers cancellation that landed
+                    // between the check above and `run()`. `Task.isCancelled` is
+                    // deliberately not re-read here: inside a GCD block there is
+                    // no current task, so it would always report false.
+                    box.store(process)
+
+                    let deadline = DispatchWorkItem { box.expire() }
+                    DispatchQueue.global().asyncAfter(deadline: .now() + limit, execute: deadline)
+
+                    let outData = stdout.fileHandleForReading.readDataToEndOfFile()
+                    let errData = stderr.fileHandleForReading.readDataToEndOfFile()
+                    process.waitUntilExit()
+                    deadline.cancel()
+                    if process.terminationStatus != 0 {
+                        if box.didTimeOut {
+                            continuation.resume(throwing: IliadError.network("osascript: timeout \(Int(limit)) s"))
+                            return
+                        }
+                        let message = String(data: errData, encoding: .utf8)?
+                            .trimmingCharacters(in: .whitespacesAndNewlines) ?? "exit \(process.terminationStatus)"
+                        continuation.resume(throwing: IliadError.network(message))
+                        return
+                    }
+                    continuation.resume(returning: String(data: outData, encoding: .utf8) ?? "")
                 }
-                continuation.resume(returning: String(data: outData, encoding: .utf8) ?? "")
             }
+        } onCancel: {
+            box.terminate()
         }
+    }
+}
+
+/// Holds the running `osascript` so the timeout and the cancellation handler
+/// can terminate it. `Process` is not `Sendable`, so every access goes through
+/// the lock.
+private final class ProcessBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var process: Process?
+    private var cancelled = false
+    private var timedOut = false
+
+    /// Adopts a freshly started process. If cancellation was already requested
+    /// while it was being built, it is terminated straight away.
+    func store(_ process: Process) {
+        lock.lock()
+        let stopNow = cancelled
+        if !stopNow { self.process = process }
+        lock.unlock()
+        if stopNow { process.terminate() }
+    }
+
+    /// Records the cancellation request and kills the process if it is still
+    /// running. Idempotent, so it is safe from the cancellation handler and
+    /// from the start race at the same time.
+    func terminate() {
+        lock.lock()
+        cancelled = true
+        let running = process
+        lock.unlock()
+        if let running, running.isRunning { running.terminate() }
+    }
+
+    /// Called by the deadline: records that the run went over the limit and
+    /// kills the process, so the reads unblock and the non-zero exit is
+    /// reported as a timeout.
+    func expire() {
+        lock.lock()
+        timedOut = true
+        let running = process
+        lock.unlock()
+        if let running, running.isRunning { running.terminate() }
+    }
+
+    var didTimeOut: Bool {
+        lock.lock(); defer { lock.unlock() }; return timedOut
     }
 }
