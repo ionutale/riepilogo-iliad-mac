@@ -51,7 +51,11 @@ targets:
   RiepilogoIliadTests:
     type: bundle.unit-test
     platform: macOS
-    sources: [RiepilogoIliadTests]
+    sources:
+      - path: RiepilogoIliadTests
+        excludes: ["Fixtures/**"]
+      - path: RiepilogoIliadTests/Fixtures
+        buildPhase: resources
     dependencies:
       - target: RiepilogoIliad
     settings:

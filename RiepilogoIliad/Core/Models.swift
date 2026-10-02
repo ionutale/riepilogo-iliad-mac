@@ -104,9 +104,7 @@ struct Day: DatabaseValueConvertible, Codable, Equatable, Sendable {
     static func parse(_ string: String) -> Date? {
         let parts = string.split(separator: "-").compactMap { Int($0) }
         guard parts.count == 3 else { return nil }
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(identifier: "UTC")!
-        return calendar.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2]))
+        return dateOnly(y: parts[0], m: parts[1], d: parts[2])
     }
 }
 
