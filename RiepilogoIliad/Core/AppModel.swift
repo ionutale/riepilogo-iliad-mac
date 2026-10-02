@@ -79,14 +79,66 @@ func dailyHistoryPoints(readings: [Reading], timeZone: TimeZone) -> [HistoryPoin
     }
 }
 
+/// Per-card state badge spec §8 asks for, with last-good values kept on screen.
+enum EntryBadge: Equatable, Sendable {
+    /// The last attempt failed. The numbers below the badge are the previous
+    /// good ones, which is precisely what the user needs to know.
+    case error(String)
+    /// The newest *successful* reading is older than two refresh intervals, so
+    /// the fetch loop itself is not keeping up and the numbers may be wrong.
+    case stale
+}
+
+/// True when the remaining quota is at or below the configured low threshold.
+///
+/// Independent of `barClass`, which is about *used* — spec §8 asks for both
+/// signals, and a SIM that is nearly out is both nearly used and low. An
+/// allowance of zero is not "low data": there is nothing to compare against.
+func isLowData(remaining: Double, allowance: Double, threshold: Double) -> Bool {
+    guard allowance > 0 else { return false }
+    return remaining / allowance * 100 <= threshold
+}
+
+/// The badge for one card, given the current refresh interval.
+///
+/// An error always wins: the newest attempt failed and the figures on the card
+/// are the previous good ones. `stale` covers the other way a card can be
+/// lying — the last *successful* reading has aged past two intervals. A SIM
+/// that was just attempted and failed already gets `.error`, so the two cases
+/// cannot both claim the same card.
+func entryBadge(for entry: Entry, now: Date = Date(), interval: TimeInterval) -> EntryBadge? {
+    if let error = entry.lastError { return .error(error) }
+    guard let good = entry.lastGood else { return nil }
+    guard now.timeIntervalSince(good.fetchedAt.date) > 2 * interval else { return nil }
+    return .stale
+}
+
 @MainActor
 @Observable
 final class AppModel {
+    /// Days plotted by the per-SIM sparkline in the popover (spec §8).
+    static let sparklineDays = 7
+
     var snapshot = Snapshot()
-    var bootstrapError: String?
+    /// Observable for the whole duration of a cycle, manual or timer-driven.
+    /// `Snapshot` cannot carry this: the coordinator republishes only after the
+    /// cycle, so a flag read from it was always `false` when the UI needed it.
+    private(set) var isRefreshing = false
+    /// Last 7 daily points per account, for the card sparkline. Refilled on
+    /// every `reload()` off the main actor, same as `historyPoints`.
+    private(set) var sparklines: [String: [HistoryPoint]] = [:]
     let settings: AppSettings
     let coordinator: RefreshCoordinator
-    private var timerTask: Task<Void, Never>?
+    /// Internal rather than private so the reschedule behaviour is observable
+    /// from tests without waiting out a one-hour sleep.
+    private(set) var timerTask: Task<Void, Never>?
+
+    /// Stops the sleep loop. Used by tests (and the only correct way to shut the
+    /// loop down without waiting out its interval).
+    func cancelTimer() {
+        timerTask?.cancel()
+        timerTask = nil
+    }
 
     init(settings: AppSettings, coordinator: RefreshCoordinator) {
         self.settings = settings
@@ -95,6 +147,13 @@ final class AppModel {
 
     var totals: Totals { computeTotals(entries: Array(snapshot.entries.values)) }
     var cards: [Entry] { sortEntries(Array(snapshot.entries.values)) }
+
+    /// The empty state is only honest when no account is configured. A SIM that
+    /// has been added but not fetched yet still renders a card (a bare entry),
+    /// so "no cards" alone is not enough — and claiming "Nessun account
+    /// configurato" next to a configured SIM is the false message this guards.
+    var hasNoAccounts: Bool { cards.isEmpty && settings.accounts.isEmpty }
+
     var hasWarning: Bool {
         cards.contains { entry in
             guard let remaining = entry.lastGood?.remainingGB else { return false }
@@ -106,6 +165,10 @@ final class AppModel {
         }
     }
 
+    func badge(for entry: Entry) -> EntryBadge? {
+        entryBadge(for: entry, now: Date(), interval: settings.refreshInterval)
+    }
+
     func start() {
         Task {
             // Notifications need a granted centre before the first cycle can post;
@@ -115,27 +178,58 @@ final class AppModel {
                 await SystemNotificationPoster.shared.requestAuthorization()
             }
             await reload()
-            _ = await coordinator.refreshOnce()
-            await reload()
+            await runRefreshCycle()
         }
-        timerTask = Task { [settings] in
+        rescheduleTimer()
+    }
+
+    /// Cancels the pending sleep and starts a fresh loop with the interval that
+    /// is configured *now*.
+    ///
+    /// Without it the loop reads `settings.refreshInterval` once per iteration
+    /// and then sleeps for it: switching from 24h to 1h would leave the old
+    /// cadence in place for up to a day, which for a quota monitor means showing
+    /// a day-old reading with no warning.
+    func rescheduleTimer() {
+        timerTask?.cancel()
+        timerTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(settings.refreshInterval))
-                _ = await coordinator.refreshOnce()
-                await self.reload()
+                guard let self else { return }
+                try? await Task.sleep(for: .seconds(self.settings.refreshInterval))
+                // `Task.sleep` swallows its cancellation as `nil`, so the
+                // cancelled sleep falls through to here; without this check a
+                // cancel-then-reschedule would fire one extra cycle.
+                if Task.isCancelled { return }
+                await self.runRefreshCycle()
             }
         }
     }
 
     func refreshNow() {
-        Task {
-            _ = await coordinator.refreshOnce()
-            await reload()
-        }
+        Task { await runRefreshCycle() }
+    }
+
+    /// One cycle plus the post-cycle reload, bracketed by `isRefreshing` so the
+    /// popover can disable "Aggiorna ora" and show a spinner for the whole
+    /// window — five sequential fetches can run for minutes.
+    func runRefreshCycle() async {
+        isRefreshing = true
+        _ = await coordinator.refreshOnce()
+        isRefreshing = false
+        await reload()
+    }
+
+    /// Reconciles the snapshot with the configured accounts and reloads it.
+    /// Called from Settings after add/edit/remove/import so the popover shows a
+    /// new SIM (or drops a deleted one) at once instead of at the next cycle.
+    func accountsChanged() async {
+        await coordinator.reconcile()
+        await reload()
     }
 
     func reload() async {
         snapshot = await coordinator.snapshot()
+        await loadSparklines()
     }
 
     /// Reads one account's history off the main actor: the SQLite query is
@@ -145,6 +239,28 @@ final class AppModel {
         let store = coordinator.storeHandle
         let since = Date().addingTimeInterval(-Double(days) * 86400)
         let readings = (try? await Task.detached { try store.history(account: account, since: since) }.value) ?? []
-        return dailyHistoryPoints(readings: readings, timeZone: TimeZone(identifier: "Europe/Rome") ?? .current)
+        return dailyHistoryPoints(readings: readings, timeZone: romeTimeZone)
+    }
+
+    /// One off-main pass over every account for the card sparklines. A SIM with
+    /// no history yet simply has no entry, and the card renders no chart.
+    private func loadSparklines() async {
+        let store = coordinator.storeHandle
+        let names = Array(snapshot.entries.keys)
+        let since = Date().addingTimeInterval(-Double(Self.sparklineDays) * 86400)
+        let days = Self.sparklineDays
+        sparklines = await Task.detached { () -> [String: [HistoryPoint]] in
+            var result: [String: [HistoryPoint]] = [:]
+            for name in names {
+                let readings = (try? store.history(account: name, since: since)) ?? []
+                result[name] = Array(
+                    dailyHistoryPoints(readings: readings, timeZone: romeTimeZone).suffix(days))
+            }
+            return result
+        }.value
     }
 }
+
+/// Single source for the timezone every "today"/day-boundary calculation uses
+/// (spec §6: date-only arithmetic in UTC, "today" in `Europe/Rome`).
+let romeTimeZone: TimeZone = TimeZone(identifier: "Europe/Rome") ?? .current

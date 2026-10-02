@@ -58,7 +58,12 @@ actor RefreshCoordinator {
     private let retentionDays: Int
 
     private var entries: [String: Entry] = [:]
-    private var refreshing = false
+    /// True while either a refresh cycle or a "Verifica account" run is in
+    /// flight. The two are mutually exclusive on purpose: both drive the same
+    /// Safari tab on the fallback path, and `SafariFetcher`'s first step is
+    /// `GET /account/?logout=user`, so overlapping them would log the in-flight
+    /// cycle out of its session and turn a working SIM into a bogus `.auth`.
+    private var fetchInFlight = false
     private var lastCycle: Date?
 
     init(store: Store,
@@ -76,7 +81,16 @@ actor RefreshCoordinator {
 
         let latest = try store.latestPerAccount()
         let lastGood = try store.lastGoodPerAccount()
-        for account in accounts() {
+        let live = accounts()
+        // Hydration *is* reconciliation, written out rather than delegated to
+        // `reconcile(accounts:)` because an actor's `init` is not isolated to the
+        // actor. Every configured SIM gets an entry here, so it has a card at
+        // launch instead of appearing only after the first cycle.
+        //
+        // Rows in the store for accounts that are no longer configured are left
+        // untouched: they belong to the history, not to the snapshot, and a
+        // re-added SIM must find its own past data again.
+        for account in live {
             var entry = Entry(account: account.name)
             if let row = latest[account.name] {
                 entry.lastAttempt = row.fetchedAt.date
@@ -90,8 +104,36 @@ actor RefreshCoordinator {
         _ = try? store.deleteOlderThan(Date().addingTimeInterval(-Double(retentionDays) * 86400))
     }
 
+    /// Reconciles the in-memory snapshot with the configured accounts.
+    ///
+    /// `entries` *is* what the UI renders and what `computeTotals` sums, and it
+    /// is keyed by account **name** — the same key the `readings` table uses —
+    /// so without this call the snapshot drifts from the account list in both
+    /// directions:
+    ///
+    /// - a deleted or renamed SIM keeps its card, keeps its frozen `lastGood`
+    ///   and keeps contributing to the menu-bar total until the app is
+    ///   relaunched;
+    /// - a SIM added in Settings renders no card at all until the next cycle
+    ///   (up to 4h by default), while the popover claims there is no account
+    ///   configured.
+    ///
+    /// Seeding a bare `Entry` is what makes a new SIM appear at once: it has no
+    /// reading and no error, so the card says it has no data yet instead of
+    /// being absent.
+    func reconcile(accounts configured: [Account]? = nil) {
+        let live = configured ?? accounts()
+        let names = Set(live.map(\.name))
+        for name in Array(entries.keys) where !names.contains(name) {
+            entries.removeValue(forKey: name)
+        }
+        for account in live where entries[account.name] == nil {
+            entries[account.name] = Entry(account: account.name)
+        }
+    }
+
     func snapshot() -> Snapshot {
-        Snapshot(entries: entries, refreshing: refreshing, lastCycle: lastCycle)
+        Snapshot(entries: entries, lastCycle: lastCycle)
     }
 
     /// Escape hatch for the UI to read history. `nonisolated` so the main-actor
@@ -100,23 +142,43 @@ actor RefreshCoordinator {
     nonisolated var storeHandle: Store { store }
 
     /// Runs one cycle over every account, sequentially. Returns `false` when a
-    /// cycle is already in flight (single-flight: the caller gets a no-op).
+    /// fetch is already in flight (single-flight: the caller gets a no-op).
     func refreshOnce() async -> Bool {
-        guard !refreshing else { return false }
-        refreshing = true
+        guard !fetchInFlight else { return false }
+        fetchInFlight = true
         defer {
-            refreshing = false
+            fetchInFlight = false
             lastCycle = Date()
         }
+        reconcile()
         for account in accounts() {
             await refresh(account: account)
         }
         return true
     }
 
+    /// Returned verbatim for every account while a fetch is already running, so
+    /// a busy "Verifica account" can never be mistaken for a credential
+    /// failure — reporting `ok: false` with this message is a statement about
+    /// the app's state, not about the SIM's password.
+    static let busyMessage = "Aggiornamento in corso. Riprova tra poco."
+
     /// Read-only connectivity probe used by Settings: fetches and parses every
     /// account but touches neither the store nor the in-memory snapshot.
+    ///
+    /// Serialised against refresh cycles (see `fetchInFlight`): a concurrent
+    /// probe would race the cycle through the same Safari tab and, on the
+    /// fallback path, its logout step would invalidate the cycle's session.
     func checkAccounts() async -> [CheckResult] {
+        guard !fetchInFlight else {
+            return accounts().map {
+                CheckResult(account: $0.name, ok: false, path: nil, usedGB: nil,
+                            remainingGB: nil, allowanceGB: nil, renewalDate: nil,
+                            daysToRenewal: nil, error: Self.busyMessage)
+            }
+        }
+        fetchInFlight = true
+        defer { fetchInFlight = false }
         var results: [CheckResult] = []
         for account in accounts() {
             // Declared outside the `do` so the `catch` can scrub it: a fetch

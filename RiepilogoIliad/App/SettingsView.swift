@@ -67,6 +67,14 @@ struct SettingsView: View {
                 Button("Verifica account") {
                     Task { checkResults = CheckResultsBox(results: await model.coordinator.checkAccounts()) }
                 }
+                // A check drives the same Safari tab as an in-flight cycle, and
+                // its first step logs the portal session out; running both at
+                // once would turn a working SIM into a bogus credential failure.
+                .disabled(model.isRefreshing)
+                if model.isRefreshing {
+                    Text("Verifica account non disponibile mentre un aggiornamento è in corso.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 Button("Importa account da config.yaml") { importAccountsFromFile() }
                 Button("Importa storico da iliad.db") { importHistoryFromFile() }
                 if let importMessage {
@@ -76,6 +84,9 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .frame(width: 460, height: 560)
+        // The sleep loop reads the interval once per cycle, so a change here has
+        // to cancel the pending sleep rather than wait it out.
+        .onChange(of: model.settings.refreshInterval) { model.rescheduleTimer() }
         .sheet(item: $editing) { editing in
             AccountEditorView(account: editing.account)
                 .environment(model)
@@ -93,6 +104,9 @@ struct SettingsView: View {
     private func remove(_ account: Account) {
         model.settings.accounts.removeAll { $0.id == account.id }
         try? KeychainCredentialStore().deletePassword(for: account.id)
+        // Without this the deleted SIM keeps its card and keeps counting toward
+        // the menu-bar total at its frozen quota until the app is relaunched.
+        Task { await model.accountsChanged() }
     }
 
     private func importAccountsFromFile() {
@@ -123,6 +137,10 @@ struct SettingsView: View {
             var message = importSummary(merge, interval: interval)
             if intervalIgnored { message += " Intervallo ignorato: non valido." }
             importMessage = message
+            // Imported SIMs must render at once: the interval imported above also
+            // has to take effect without waiting out the old sleep.
+            if interval != nil { model.rescheduleTimer() }
+            Task { await model.accountsChanged() }
         } catch {
             // Never the raw error: a decoding failure quotes the YAML it failed
             // on, and that YAML holds the passwords.

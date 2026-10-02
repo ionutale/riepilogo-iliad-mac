@@ -10,6 +10,10 @@ struct MenuBarLabel: View {
                   : "antenna.radiowaves.left.and.right")
             if let totals = model?.totals, totals.hasData {
                 Text(formatGB(totals.remainingGB))
+            } else {
+                // Spec §8: `—` when there is no data, so the menu bar reads as
+                // "nothing to report yet" instead of as a blank/missing item.
+                Text("—")
             }
         }
     }
