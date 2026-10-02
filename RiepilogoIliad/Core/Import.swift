@@ -91,8 +91,10 @@ func parseGoDuration(_ text: String) throws -> TimeInterval {
         digits = ""
     }
     // Trailing digits ("1h30") mean a number with no unit, and a zero or empty
-    // duration would mean "never refresh".
-    guard digits.isEmpty, total > 0 else { throw ImportError.invalidDuration }
+    // duration would mean "never refresh". The running total needs its own guard:
+    // two components can each be finite and still overflow when summed, and an
+    // infinite interval would silently snap to the longest tag.
+    guard digits.isEmpty, total > 0, total.isFinite else { throw ImportError.invalidDuration }
     return total
 }
 
@@ -133,19 +135,26 @@ struct AccountMerge: Equatable {
 func mergeImportedAccounts(existing: [Account], imported: [ImportedAccount]) -> AccountMerge {
     var merge = AccountMerge(accounts: existing, passwords: [])
     for item in imported {
+        var account: Account
         if let index = merge.accounts.firstIndex(where: { $0.name == item.name }) {
-            var account = merge.accounts[index]
+            account = merge.accounts[index]
             account.username = item.username
             account.renewalDay = item.renewalDay
             merge.accounts[index] = account
-            merge.passwords.append(.init(id: account.id, password: item.password))
             merge.updatedCount += 1
         } else {
-            let account = Account(name: item.name, username: item.username,
-                                  renewalDay: item.renewalDay)
+            account = Account(name: item.name, username: item.username,
+                              renewalDay: item.renewalDay)
             merge.accounts.append(account)
-            merge.passwords.append(.init(id: account.id, password: item.password))
             merge.addedCount += 1
+        }
+        // An empty password means "keep the stored one", exactly as in the
+        // account editor: a config that omits a password must not wipe it, and a
+        // new SIM with no password simply has no Keychain item until the user
+        // types one — which "Verifica account" then reports as a missing
+        // password rather than an authentication failure.
+        if !item.password.isEmpty {
+            merge.passwords.append(.init(id: account.id, password: item.password))
         }
     }
     return merge
@@ -173,8 +182,9 @@ func importSummary(_ merge: AccountMerge, interval: TimeInterval?) -> String {
 /// 2. The current database is preserved as `iliad.db.bak` before it is
 ///    replaced, so a wrong pick is always recoverable.
 /// 3. Sidecars are replaced or *removed*, never left behind: SQLite does not
-///    check which database a `-wal` belongs to before replaying it, so an
-///    orphan left by a previous session would be applied to the fresh file.
+///    check which database a `-wal` (or a hot `-journal`) belongs to before
+///    replaying it, so an orphan left by a previous session would be applied to
+///    the fresh file.
 ///
 /// Opening the imported file through GRDB (as `Store` does) adds a
 /// `grdb_migrations` table to it. That is benign: the Go app ignores tables it
@@ -192,7 +202,10 @@ func importDatabase(from source: URL, to destination: URL) throws {
                                     withIntermediateDirectories: true)
     try backup(destination, fileManager: fileManager)
 
-    for suffix in ["", "-wal", "-shm"] {
+    // `-journal` is on the list for the same reason as the WAL pair: `Store` runs
+    // in rollback-journal mode, so a crash can leave a hot journal that would
+    // otherwise be replayed onto the imported database.
+    for suffix in ["", "-wal", "-shm", "-journal"] {
         let sourceFile = URL(fileURLWithPath: source.path + suffix)
         let destinationFile = URL(fileURLWithPath: destination.path + suffix)
         if fileManager.fileExists(atPath: sourceFile.path) {

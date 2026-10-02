@@ -71,6 +71,12 @@ final class ImportTests: XCTestCase {
                 XCTAssertEqual(error as? ImportError, .invalidDuration, text)
             }
         }
+        // Each component is finite on its own (`Double` of 307 nines is ~1e306); the
+        // sum overflows. An infinite interval would otherwise snap to 24 h.
+        let huge = String(repeating: "9", count: 307)
+        XCTAssertThrowsError(try parseGoDuration(huge + "h" + huge + "h"), "sum overflow") { error in
+            XCTAssertEqual(error as? ImportError, .invalidDuration)
+        }
     }
 
     func testSnapRefreshIntervalPicksNearestTag() {
@@ -160,6 +166,22 @@ final class ImportTests: XCTestCase {
         XCTAssertEqual(merge.passwords.count, 2)
     }
 
+    func testMergeKeepsStoredPasswordWhenTheConfigHasNone() throws {
+        let id = UUID()
+        let existing = [Account(id: id, name: "SIM 1", username: "user1")]
+
+        let merge = mergeImportedAccounts(existing: existing, imported: [
+            ImportedAccount(name: "SIM 1", username: "user1", password: ""),
+            ImportedAccount(name: "SIM 2", username: "user2", password: ""),
+        ])
+
+        XCTAssertEqual(merge.accounts.count, 2)
+        XCTAssertEqual(merge.updatedCount, 1)
+        XCTAssertEqual(merge.addedCount, 1)
+        XCTAssertEqual(merge.passwords, [],
+                       "an empty password must not overwrite (or create) a Keychain item")
+    }
+
     func testImportSummaryCountsInItalian() {
         let merge = AccountMerge(accounts: [], passwords: [],
                                  addedCount: 1, updatedCount: 2)
@@ -226,6 +248,9 @@ final class ImportTests: XCTestCase {
             .appendingPathComponent("iliad.db-wal"))
         try Data("stale shm".utf8).write(to: destination.deletingLastPathComponent()
             .appendingPathComponent("iliad.db-shm"))
+        // A hot rollback journal is the same hazard in `Store`'s journal mode.
+        try Data("stale journal".utf8).write(to: destination.deletingLastPathComponent()
+            .appendingPathComponent("iliad.db-journal"))
 
         try importDatabase(from: source, to: destination)
 
@@ -233,6 +258,8 @@ final class ImportTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path + "-wal"),
                        "a stale WAL would be replayed over the imported database")
         XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path + "-shm"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path + "-journal"),
+                       "a hot journal would be replayed over the imported database")
     }
 
     func testImportDatabaseBacksUpTheExistingDatabase() throws {
