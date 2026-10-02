@@ -1,5 +1,30 @@
 import Foundation
 
+/// Scrubs an error message before it is written to the database (which keeps
+/// rows for `retentionDays`) or handed to the UI. Two reasons this matters:
+/// `SafariFetcher` can surface raw `osascript` stderr, and the account's
+/// password travels in that process's argv, so external text can quote the
+/// credentials back at us.
+///
+/// Redaction is unconditional: a one-character password that garbles the
+/// message is a better failure mode than a persisted credential. Credentials
+/// are replaced before the message is truncated, so a secret straddling the cut
+/// cannot survive half-substituted.
+func redactedError(_ message: String, password: String?, username: String? = nil) -> String {
+    var scrubbed = message
+    for secret in [password, username] {
+        guard let secret, !secret.isEmpty else { continue }
+        scrubbed = scrubbed.replacingOccurrences(of: secret, with: "***")
+    }
+    // One line: a multi-line tool dump must not be able to smuggle structure
+    // into a field the UI renders.
+    let flattened = scrubbed
+        .split(whereSeparator: { $0.isNewline || $0 == "\t" })
+        .joined(separator: " ")
+    guard flattened.count > 300 else { return flattened }
+    return String(flattened.prefix(300)) + "…"
+}
+
 struct CheckResult: Sendable {
     var account: String
     var ok: Bool
@@ -85,8 +110,12 @@ actor RefreshCoordinator {
     func checkAccounts() async -> [CheckResult] {
         var results: [CheckResult] = []
         for account in accounts() {
+            // Declared outside the `do` so the `catch` can scrub it: a fetch
+            // error can quote back the credentials that were just read.
+            var password: String?
             do {
-                guard let password = try credentials.password(for: account.id) else {
+                password = try credentials.password(for: account.id)
+                guard let password else {
                     throw IliadError.auth("password mancante nel Portachiavi")
                 }
                 let fetched = FetchedAccount(id: account.id, name: account.name,
@@ -101,7 +130,8 @@ actor RefreshCoordinator {
                     daysToRenewal: data.renewalDate.map { daysBetween(todayNow(), $0) },
                     error: nil))
             } catch {
-                let message = (error as? IliadError)?.userMessage ?? error.localizedDescription
+                let message = redactedError((error as? IliadError)?.userMessage ?? error.localizedDescription,
+                                            password: password, username: account.username)
                 results.append(CheckResult(account: account.name, ok: false, path: nil,
                                            usedGB: nil, remainingGB: nil, allowanceGB: nil,
                                            renewalDate: nil, daysToRenewal: nil, error: message))
@@ -112,8 +142,12 @@ actor RefreshCoordinator {
 
     private func refresh(account: Account) async {
         let now = Date()
+        // Declared outside the `do` so the `catch` can scrub it: a fetch error
+        // can quote back the credentials that were just read.
+        var password: String?
         do {
-            guard let password = try credentials.password(for: account.id) else {
+            password = try credentials.password(for: account.id)
+            guard let password else {
                 throw IliadError.auth("password mancante nel Portachiavi")
             }
             let fetched = FetchedAccount(id: account.id, name: account.name,
@@ -130,7 +164,8 @@ actor RefreshCoordinator {
             let decision = notifier.decide(previous: previous, current: data, account: account)
             await notifier.post(decision, account: account, data: data)
         } catch {
-            let message = (error as? IliadError)?.userMessage ?? error.localizedDescription
+            let message = redactedError((error as? IliadError)?.userMessage ?? error.localizedDescription,
+                                        password: password, username: account.username)
             try? store.insert(Reading.failure(account: account.name, error: message, fetchedAt: now))
             var entry = entries[account.name] ?? Entry(account: account.name)
             entry.lastAttempt = now
