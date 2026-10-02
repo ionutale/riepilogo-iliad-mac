@@ -2905,13 +2905,7 @@ struct RiepilogoIliadApp: App {
         }
         .menuBarExtraStyle(.window)
 
-        Window("Storico", id: "history") {
-            if let model { HistoryWindow().environment(model) }
-        }
-
-        Settings {
-            if let model { SettingsView().environment(model) }
-        }
+        // The history Window scene is added in Task 11; the Settings scene in Task 12.
     }
 }
 ```
@@ -2961,6 +2955,7 @@ git commit -m "feat: app shell with menu bar, popover, and formatting"
 
 **Files:**
 - Create: `RiepilogoIliad/App/HistoryWindow.swift`
+- Modify: `RiepilogoIliad/App/RiepilogoIliadApp.swift` (add the history Window scene)
 - Modify: `RiepilogoIliad/Core/AppModel.swift` (real `dailyHistoryPoints`, real `storeHandle`)
 - Modify: `RiepilogoIliad/Core/RefreshCoordinator.swift` (expose `storeHandle`)
 - Create: `RiepilogoIliadTests/HistoryTests.swift`
@@ -3074,6 +3069,13 @@ struct HistoryWindow: View {
 }
 ```
 
+Add the Window scene to `RiepilogoIliadApp.swift` (inside `body`):
+```swift
+        Window("Storico", id: "history") {
+            if let model { HistoryWindow().environment(model) }
+        }
+```
+
 - [ ] **Step 5: Run tests and build**
 
 Run: `make test && make build`
@@ -3094,6 +3096,7 @@ git commit -m "feat: history window with Swift Charts"
 - Create: `RiepilogoIliad/Core/Import.swift`
 - Create: `RiepilogoIliad/App/SettingsView.swift`
 - Create: `RiepilogoIliad/App/AccountEditorView.swift`
+- Modify: `RiepilogoIliad/App/RiepilogoIliadApp.swift` (add the Settings scene)
 - Create: `RiepilogoIliadTests/ImportTests.swift`
 
 **Interfaces:**
@@ -3411,6 +3414,13 @@ struct EditingAccount: Identifiable {
     let id = UUID()
     let account: Account? // nil = new
 }
+```
+
+Add the Settings scene to `RiepilogoIliadApp.swift` (inside `body`):
+```swift
+        Settings {
+            if let model { SettingsView().environment(model) }
+        }
 ```
 
 - [ ] **Step 6: Run tests and build**
