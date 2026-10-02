@@ -3,9 +3,15 @@ import SwiftUI
 @main
 struct RiepilogoIliadApp: App {
     @State private var model: AppModel?
-    @State private var bootstrapError: String?
+    @State private var bootstrap: BootstrapState?
 
     init() {
+        // The test bundle is app-hosted, so this `init` runs during `make test`
+        // too. Booting for real would open the developer's own `iliad.db`, prune
+        // their history, show a menu-bar icon, ask for notification permission
+        // and — with accounts configured — log into iliad.it with their stored
+        // passwords. The suite has to be hermetic.
+        guard !AppBootstrap.isRunningTests else { return }
         do {
             let settings = AppSettings()
             let runtime = settings.runtime
@@ -22,7 +28,9 @@ struct RiepilogoIliadApp: App {
             appModel.start()
             _model = State(initialValue: appModel)
         } catch {
-            _bootstrapError = State(initialValue: error.localizedDescription)
+            _bootstrap = State(initialValue: BootstrapState(
+                error: error.localizedDescription,
+                databasePath: Store.defaultPathDescription()))
         }
     }
 
@@ -30,8 +38,8 @@ struct RiepilogoIliadApp: App {
         MenuBarExtra {
             if let model {
                 PopoverView().environment(model)
-            } else {
-                Text("Errore avvio: \(bootstrapError ?? "sconosciuto")").padding()
+            } else if let bootstrap {
+                BootstrapErrorView(state: bootstrap)
             }
         } label: {
             MenuBarLabel(model: model)
@@ -39,11 +47,23 @@ struct RiepilogoIliadApp: App {
         .menuBarExtraStyle(.window)
 
         Settings {
-            if let model { SettingsView().environment(model) }
+            scene { SettingsView() }
         }
 
         Window("Storico", id: "history") {
-            if let model { HistoryWindow().environment(model) }
+            scene { HistoryWindow() }
+        }
+    }
+
+    /// Every scene shows the same thing: either the working app, or the same
+    /// bootstrap diagnosis. A blank Settings or History window on a bootstrap
+    /// failure left the user with no diagnosis and no way forward.
+    @ViewBuilder
+    private func scene<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        if let model {
+            content().environment(model)
+        } else if let bootstrap {
+            BootstrapErrorView(state: bootstrap)
         }
     }
 }

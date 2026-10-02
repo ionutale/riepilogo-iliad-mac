@@ -180,8 +180,16 @@ struct Entry: Sendable {
 }
 
 /// Consistent view published to the UI.
+///
+/// Deliberately has no `refreshing` flag: the coordinator only republishes the
+/// snapshot *after* a cycle, so such a field was always `false` when the UI read
+/// it and the progress indicator it drove was dead code. The observable flag
+/// lives on `AppModel` (`isRefreshing`), which brackets every `refreshOnce`.
+///
+/// Also deliberately absent: anything about staleness. That is derived from
+/// `Entry.lastError`/`lastGood` at render time (see `entryBadge`) so a change of
+/// refresh interval reclassifies stale cards without a new store field.
 struct Snapshot: Sendable {
     var entries: [String: Entry] = [:]
-    var refreshing = false
     var lastCycle: Date?
 }

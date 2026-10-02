@@ -12,11 +12,37 @@ final class Store: Sendable {
     }
 
     static func defaultURL() throws -> URL {
+        let dir = try defaultDirectory(createIfNeeded: true)
+        return dir.appendingPathComponent("iliad.db")
+    }
+
+    private static func defaultDirectory(createIfNeeded: Bool) throws -> URL {
         let base = try FileManager.default.url(
             for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
         let dir = base.appendingPathComponent("RiepilogoIliad", isDirectory: true)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("iliad.db")
+        if createIfNeeded {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        return dir
+    }
+
+    /// The database path as a string, for the bootstrap-failure surface.
+    ///
+    /// Deliberately creates nothing. It is called from `BootstrapState`, i.e. on
+    /// the path where the store could not be opened, and also from tests: it must
+    /// be a pure description of where the database *would* be, never a side effect
+    /// that makes the directory or the file exist.
+    static func defaultPathDescription() -> String {
+        let dir: URL
+        if let resolved = try? defaultDirectory(createIfNeeded: false) {
+            dir = resolved
+        } else {
+            // No Application Support directory reachable: fall back to the same
+            // path spelled out, which is still actionable for the user.
+            dir = URL(fileURLWithPath: NSHomeDirectory())
+                .appendingPathComponent("Library/Application Support/RiepilogoIliad", isDirectory: true)
+        }
+        return dir.appendingPathComponent("iliad.db").path
     }
 
     private static var migrator: DatabaseMigrator {
