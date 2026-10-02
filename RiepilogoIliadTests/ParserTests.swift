@@ -82,4 +82,12 @@ final class ParserTests: XCTestCase {
             guard case IliadError.parse = error else { return XCTFail("got \(error)") }
         }
     }
+
+    func testPeriodEndFallbackAcrossDST() throws {
+        let html = #"<html><body><span class="red">1 GB / 10 GB</span><p>Periodo di riferimento dal 28 febbraio 2026 al 29 marzo 2026.</p></body></html>"#
+        let data = try parseAccountPage(html: html, now: now, renewalDay: nil)
+        XCTAssertEqual(data.periodStart, dateOnly(y: 2026, m: 2, d: 28))
+        XCTAssertEqual(data.periodEnd, dateOnly(y: 2026, m: 3, d: 29))
+        XCTAssertEqual(data.renewalDate, dateOnly(y: 2026, m: 3, d: 30))
+    }
 }

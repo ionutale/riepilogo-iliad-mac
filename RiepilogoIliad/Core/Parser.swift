@@ -71,6 +71,14 @@ private func firstMatch(_ regex: NSRegularExpression, in text: String) -> [Strin
 
 // MARK: - Dates
 
+/// Gregorian calendar pinned to UTC, so date-only arithmetic never shifts
+/// across DST boundaries (mirrors Go's UTC `AddDate`).
+private func utcCalendar() -> Calendar {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(identifier: "UTC")!
+    return calendar
+}
+
 private func fixedDate(day: Int, month: Int, year: Int) -> Date? {
     guard (1...31).contains(day), (1...12).contains(month) else { return nil }
     var calendar = Calendar(identifier: .gregorian)
@@ -126,7 +134,7 @@ private func parseRenewalDate(text: String, now: Date, periodEnd: Date?, renewal
         return d
     }
     if let end = periodEnd {
-        return Calendar(identifier: .gregorian).date(byAdding: .day, value: 1, to: end)
+        return utcCalendar().date(byAdding: .day, value: 1, to: end)
     }
     if let day = renewalDay {
         return nextDayOfMonth(day, now: now)
@@ -153,7 +161,7 @@ private func parsePeriod(text: String, now: Date) -> (start: Date?, end: Date?) 
     guard var start = dateFromTextualMatch(groups(matches[0]), now: now),
           let end = dateFromTextualMatch(groups(matches[1]), now: now) else { return (nil, nil) }
     if start > end {
-        start = Calendar(identifier: .gregorian).date(byAdding: .year, value: -1, to: start)!
+        start = utcCalendar().date(byAdding: .year, value: -1, to: start)!
     }
     return (start, end)
 }
