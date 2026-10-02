@@ -65,8 +65,21 @@ final class ParserTests: XCTestCase {
 
     func testNumberSeparators() {
         XCTAssertEqual(parseNumber("42,10"), 42.10)
+        XCTAssertEqual(parseNumber("43.2"), 43.2)
         XCTAssertEqual(parseNumber("1.234,56"), 1234.56)
         XCTAssertEqual(parseNumber("1,234.56"), 1234.56)
         XCTAssertEqual(parseNumber("100"), 100)
+    }
+
+    func testSizeToGB() {
+        for (unit, factor) in [("B", 1e-9), ("KB", 1e-6), ("MB", 1e-3), ("GB", 1.0), ("TB", 1e3)] {
+            XCTAssertEqual(sizeToGB(2, unit: unit), 2 * factor, accuracy: factor * 1e-12)
+        }
+    }
+
+    func testEmptyPageIsParseError() throws {
+        XCTAssertThrowsError(try parseAccountPage(html: "<html><body><p>niente</p></body></html>", now: dateOnly(y: 2026, m: 10, d: 2), renewalDay: nil)) { error in
+            guard case IliadError.parse = error else { return XCTFail("got \(error)") }
+        }
     }
 }
