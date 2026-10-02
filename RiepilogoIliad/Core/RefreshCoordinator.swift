@@ -90,6 +90,11 @@ actor RefreshCoordinator {
         Snapshot(entries: entries, refreshing: refreshing, lastCycle: lastCycle)
     }
 
+    /// Escape hatch for the UI to read history. `nonisolated` so the main-actor
+    /// `AppModel` can reach it. Task 11 replaces this with a direct `store`
+    /// accessor once the history window owns that path.
+    nonisolated var storeHandle: Store? { nil }
+
     /// Runs one cycle over every account, sequentially. Returns `false` when a
     /// cycle is already in flight (single-flight: the caller gets a no-op).
     func refreshOnce() async -> Bool {

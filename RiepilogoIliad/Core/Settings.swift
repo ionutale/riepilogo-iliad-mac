@@ -15,23 +15,41 @@ final class AppSettings {
 
     private let defaults: UserDefaults
 
+    /// Lock-guarded mirror of the settings for the background actors
+    /// (`RefreshCoordinator`, the fetcher and notifier providers) that read them
+    /// off the main actor.
+    let runtime = RuntimeConfig()
+
     var accounts: [Account] {
-        didSet { persist(accounts, forKey: Keys.accounts) }
+        didSet {
+            persist(accounts, forKey: Keys.accounts)
+            syncRuntime()
+        }
     }
     var refreshInterval: TimeInterval {
         didSet {
             if refreshInterval < 3600 { refreshInterval = 3600 }
             defaults.set(refreshInterval, forKey: Keys.refreshInterval)
+            syncRuntime()
         }
     }
     var fetchMode: FetchMode {
-        didSet { defaults.set(fetchMode.rawValue, forKey: Keys.fetchMode) }
+        didSet {
+            defaults.set(fetchMode.rawValue, forKey: Keys.fetchMode)
+            syncRuntime()
+        }
     }
     var lowThresholdPercent: Double {
-        didSet { defaults.set(lowThresholdPercent, forKey: Keys.lowThresholdPercent) }
+        didSet {
+            defaults.set(lowThresholdPercent, forKey: Keys.lowThresholdPercent)
+            syncRuntime()
+        }
     }
     var notificationsEnabled: Bool {
-        didSet { defaults.set(notificationsEnabled, forKey: Keys.notificationsEnabled) }
+        didSet {
+            defaults.set(notificationsEnabled, forKey: Keys.notificationsEnabled)
+            syncRuntime()
+        }
     }
 
     init(defaults: UserDefaults = .standard) {
@@ -43,6 +61,15 @@ final class AppSettings {
         let threshold = defaults.double(forKey: Keys.lowThresholdPercent)
         self.lowThresholdPercent = threshold > 0 ? threshold : 10
         self.notificationsEnabled = defaults.bool(forKey: Keys.notificationsEnabled)
+        syncRuntime()
+    }
+
+    /// Pushes the current values into the background-readable mirror. Called
+    /// after every mutation so the actors never observe a stale setting.
+    private func syncRuntime() {
+        runtime.update(accounts: accounts, fetchMode: fetchMode,
+                       lowThresholdPercent: lowThresholdPercent,
+                       notificationsEnabled: notificationsEnabled)
     }
 
     private func persist<T: Encodable>(_ value: T, forKey key: String) {
@@ -54,5 +81,29 @@ final class AppSettings {
     private static func load<T: Decodable>(_ type: T.Type, from defaults: UserDefaults, key: String) -> T? {
         guard let data = defaults.data(forKey: key) else { return nil }
         return try? JSONDecoder().decode(T.self, from: data)
+    }
+}
+
+/// Thread-safe snapshot the coordinator reads from background actors.
+final class RuntimeConfig: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _accounts: [Account] = []
+    private var _fetchMode: FetchMode = .auto
+    private var _lowThresholdPercent: Double = 10
+    private var _notificationsEnabled = false
+
+    var accounts: [Account] { lock.withLock { _accounts } }
+    var fetchMode: FetchMode { lock.withLock { _fetchMode } }
+    var lowThresholdPercent: Double { lock.withLock { _lowThresholdPercent } }
+    var notificationsEnabled: Bool { lock.withLock { _notificationsEnabled } }
+
+    func update(accounts: [Account], fetchMode: FetchMode, lowThresholdPercent: Double,
+                notificationsEnabled: Bool) {
+        lock.withLock {
+            _accounts = accounts
+            _fetchMode = fetchMode
+            _lowThresholdPercent = lowThresholdPercent
+            _notificationsEnabled = notificationsEnabled
+        }
     }
 }

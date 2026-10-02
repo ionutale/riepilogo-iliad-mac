@@ -128,11 +128,3 @@ final class SystemNotificationPoster: NotificationPosting, Sendable {
         }
     }
 }
-
-/// Temporary formatting helper; Task 10 moves this to Format.swift.
-private func formatGB(_ value: Double) -> String {
-    var s = String(format: "%.1f", value)
-    s = s.replacingOccurrences(of: ".", with: ",")
-    if s.hasSuffix(",0") { s.removeLast(2) }
-    return s + " GB"
-}

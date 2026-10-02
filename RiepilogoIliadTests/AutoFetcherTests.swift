@@ -65,4 +65,21 @@ final class AutoFetcherTests: XCTestCase {
         let directPath = try await directOnly.fetchHTML(for: account()).path
         XCTAssertEqual(directPath, .direct)
     }
+
+    /// The mode must be read per fetch, not captured at construction: the app
+    /// builds one fetcher for the whole process and the user can change the mode
+    /// in Settings afterwards.
+    func testModeProviderIsConsultedOnEveryFetch() async throws {
+        let mode = Box(FetchMode.direct)
+        let direct = StubFetcher { "<html>direct</html>" }
+        let safari = StubFetcher { "<html>safari</html>" }
+        let auto = AutoFetcher(direct: direct, safari: safari, modeProvider: { mode.value })
+
+        let directPath = try await auto.fetchHTML(for: account()).path
+        XCTAssertEqual(directPath, .direct)
+
+        mode.value = .safari
+        let safariPath = try await auto.fetchHTML(for: account()).path
+        XCTAssertEqual(safariPath, .safari)
+    }
 }

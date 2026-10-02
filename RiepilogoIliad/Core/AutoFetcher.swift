@@ -11,10 +11,21 @@ struct FetchOutcome: Sendable {
 struct AutoFetcher: Sendable {
     let direct: any HTMLFetcher
     let safari: any HTMLFetcher
-    let mode: FetchMode
+    private let modeProvider: @Sendable () -> FetchMode
+
+    init(direct: any HTMLFetcher, safari: any HTMLFetcher, mode: FetchMode) {
+        self.init(direct: direct, safari: safari, modeProvider: { mode })
+    }
+
+    init(direct: any HTMLFetcher, safari: any HTMLFetcher,
+         modeProvider: @escaping @Sendable () -> FetchMode) {
+        self.direct = direct
+        self.safari = safari
+        self.modeProvider = modeProvider
+    }
 
     func fetchHTML(for account: FetchedAccount) async throws -> FetchOutcome {
-        switch mode {
+        switch modeProvider() {
         case .direct:
             return FetchOutcome(html: try await direct.fetchHTML(for: account), path: .direct)
         case .safari:

@@ -35,4 +35,25 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(reloaded.refreshInterval, 3600)
         XCTAssertEqual(reloaded.lowThresholdPercent, 5)
     }
+
+    /// The background actors read `runtime`, never `AppSettings` directly, so a
+    /// missing sync would leave them on the launch-time values forever.
+    func testRuntimeMirrorsSettingsOnEveryChange() {
+        let settings = AppSettings(defaults: freshDefaults())
+        XCTAssertTrue(settings.runtime.accounts.isEmpty)
+        XCTAssertEqual(settings.runtime.fetchMode, .auto)
+        XCTAssertEqual(settings.runtime.lowThresholdPercent, 10)
+        XCTAssertFalse(settings.runtime.notificationsEnabled)
+
+        let account = Account(name: "SIM 1", username: "u", renewalDay: 17)
+        settings.accounts = [account]
+        settings.fetchMode = .safari
+        settings.lowThresholdPercent = 25
+        settings.notificationsEnabled = true
+
+        XCTAssertEqual(settings.runtime.accounts, [account])
+        XCTAssertEqual(settings.runtime.fetchMode, .safari)
+        XCTAssertEqual(settings.runtime.lowThresholdPercent, 25)
+        XCTAssertTrue(settings.runtime.notificationsEnabled)
+    }
 }
