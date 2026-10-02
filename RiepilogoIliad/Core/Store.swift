@@ -16,7 +16,10 @@ final class Store: Sendable {
         return dir.appendingPathComponent("iliad.db")
     }
 
-    private static func defaultDirectory(createIfNeeded: Bool) throws -> URL {
+    /// The directory the database lives in. `createIfNeeded: false` is the
+    /// side-effect-free form, for describing the location without bringing it
+    /// into existence.
+    static func defaultDirectory(createIfNeeded: Bool) throws -> URL {
         let base = try FileManager.default.url(
             for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
         let dir = base.appendingPathComponent("RiepilogoIliad", isDirectory: true)

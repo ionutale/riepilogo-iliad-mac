@@ -220,16 +220,6 @@ final class HTTPFetcherTests: XCTestCase {
     /// is the path the `name="login-ident"` sniff covers, and it must survive the
     /// redirect handling.
     func testConsumiBouncingToLoginIsAuthError() async {
-        MockURLProtocol.handler = { request in
-            if request.url!.path == "/account/login" {
-                return (HTTPURLResponse(url: request.url!, statusCode: 302, httpVersion: nil,
-                                        headerFields: ["Location": "/account/consumi-e-credito",
-                                                       "Set-Cookie": "session=stale; Path=/"])!, Data())
-            }
-            // Unauthenticated: bounce to the form instead of serving data.
-            return (HTTPURLResponse(url: request.url!, statusCode: 302, httpVersion: nil,
-                                    headerFields: ["Location": "/account/login"])!, Data())
-        }
         let consumiCookie = Box<String?>(nil)
         MockURLProtocol.handler = { request in
             let path = request.url!.path
@@ -284,8 +274,11 @@ final class HTTPFetcherTests: XCTestCase {
         } catch {
             XCTFail("got \(error)")
         }
-        // The initial request plus exactly `maxRedirectHops` follow-ups.
+        // The initial request plus exactly `maxRedirectHops` follow-ups — the same
+        // budget Go's `http.Client` gives a chain, so a legitimate redirect is
+        // never cut short by a limit of ours.
         XCTAssertEqual(hops.value, HTTPFetcher.maxRedirectHops + 1)
+        XCTAssertEqual(HTTPFetcher.maxRedirectHops, 10, "Go parity with http.Client")
     }
 
     /// A 302 after a POST continues as a GET without the form body — matching

@@ -179,6 +179,44 @@ final class AppIntegrationTests: XCTestCase {
         XCTAssertNotNil(model.snapshot.lastCycle, "the footer needs the cycle timestamp")
     }
 
+    /// A second trigger whose `refreshOnce()` returns `false` immediately must not
+    /// clear the flag: with a bare boolean, that no-op would re-enable "Aggiorna
+    /// ora" and drop the spinner while the real cycle was still fetching. The
+    /// gated fetcher makes this deterministic — the first cycle stays blocked
+    /// inside `fetchHTML` for as long as the test holds it.
+    func testANoOpSecondCycleDoesNotClearIsRefreshing() async throws {
+        let (gate, continuation) = AsyncStream<Void>.makeStream()
+        let entered = Box(0)
+        let fetcher = GatedFetcher(gate: gate, result: { consumiPage },
+                                  onEnter: { entered.value += 1 })
+        let model = try makeModel(fetcher, accounts: [account("SIM 1")])
+
+        let first = Task { await model.runRefreshCycle() }
+        for _ in 0..<200 where entered.value == 0 {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(entered.value, 1)
+        XCTAssertTrue(model.isRefreshing)
+
+        // The second caller loses the single-flight race and returns at once.
+        await model.runRefreshCycle()
+        XCTAssertTrue(model.isRefreshing,
+                      "a no-op cycle must not hide the one still running")
+
+        // Also the "Verifica account" case: a busy check returns immediately, and
+        // the in-flight cycle must stay visible.
+        let results = await model.coordinator.checkAccounts()
+        XCTAssertEqual(results.count, 1)
+        XCTAssertEqual(results.first?.error, RefreshCoordinator.busyMessage)
+        XCTAssertTrue(model.isRefreshing)
+
+        continuation.finish()
+        await first.value
+
+        XCTAssertFalse(model.isRefreshing, "and it must clear once the real cycle ends")
+        XCTAssertEqual(entered.value, 1, "the no-op cycle must not have fetched")
+    }
+
     /// The interval is read once per loop iteration and then slept on, so
     /// switching from 24h to 1h used to leave the old cadence in place for up to
     /// a day. Rescheduling must cancel the pending sleep and install a new one.

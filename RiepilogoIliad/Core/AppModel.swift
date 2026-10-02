@@ -124,6 +124,12 @@ final class AppModel {
     /// `Snapshot` cannot carry this: the coordinator republishes only after the
     /// cycle, so a flag read from it was always `false` when the UI needed it.
     private(set) var isRefreshing = false
+    /// How many `runRefreshCycle()` calls are in progress. A counter rather than a
+    /// bare flag because a second caller whose `refreshOnce()` returns `false`
+    /// immediately (a cycle is already running, or "Verifica account" holds the
+    /// guard) would otherwise clear the flag and hide the real cycle: the popover
+    /// would re-enable "Aggiorna ora" and drop the spinner mid-refresh.
+    private var activeRefreshes = 0
     /// Last 7 daily points per account, for the card sparkline. Refilled on
     /// every `reload()` off the main actor, same as `historyPoints`.
     private(set) var sparklines: [String: [HistoryPoint]] = [:]
@@ -213,9 +219,13 @@ final class AppModel {
     /// popover can disable "Aggiorna ora" and show a spinner for the whole
     /// window — five sequential fetches can run for minutes.
     func runRefreshCycle() async {
+        activeRefreshes += 1
         isRefreshing = true
+        defer {
+            activeRefreshes -= 1
+            isRefreshing = activeRefreshes > 0
+        }
         _ = await coordinator.refreshOnce()
-        isRefreshing = false
         await reload()
     }
 

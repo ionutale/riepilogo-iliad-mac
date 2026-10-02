@@ -229,20 +229,39 @@ actor RefreshCoordinator {
             let reading = Reading.success(account: account.name, data: data, fetchedAt: now)
             try store.insert(reading)
 
-            let previous = entries[account.name]?.lastGood?.accountData
-            entries[account.name] = Entry(account: account.name, lastGood: reading,
-                                          lastAttempt: now, lastError: nil)
-            let decision = notifier.decide(previous: previous, current: data, account: account)
-            await notifier.post(decision, account: account, data: data)
+            // The user can remove or rename this SIM while the fetch is in flight
+            // (the fetches are sequential and seconds apart). `accounts` is the
+            // live list, so re-checking it here keeps a completed-but-obsolete
+            // fetch from resurrecting a card the user has just deleted; the next
+            // `reconcile()` would drop it again, but until then it would sit on
+            // screen and in the totals. The reading row is still written: history
+            // belongs to the database, not to the current account list.
+            if isStillConfigured(account.name) {
+                let previous = entries[account.name]?.lastGood?.accountData
+                entries[account.name] = Entry(account: account.name, lastGood: reading,
+                                              lastAttempt: now, lastError: nil)
+                let decision = notifier.decide(previous: previous, current: data, account: account)
+                await notifier.post(decision, account: account, data: data)
+            }
         } catch {
             let message = redactedError((error as? IliadError)?.userMessage ?? error.localizedDescription,
                                         password: password, username: account.username)
             try? store.insert(Reading.failure(account: account.name, error: message, fetchedAt: now))
+            // Same guard as the success path: a failure row is written either way,
+            // but a SIM the user removed mid-cycle must not get a card back.
+            guard isStillConfigured(account.name) else { return }
             var entry = entries[account.name] ?? Entry(account: account.name)
             entry.lastAttempt = now
             entry.lastError = message
             entries[account.name] = entry
         }
+    }
+
+    /// Whether `name` is still one of the configured accounts. The provider is
+    /// read live (`AppSettings.runtime`), so this sees an edit made while this
+    /// cycle was fetching.
+    private func isStillConfigured(_ name: String) -> Bool {
+        accounts().contains { $0.name == name }
     }
 
     private func todayNow() -> Date {

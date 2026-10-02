@@ -19,7 +19,9 @@ struct HTTPFetcher: HTMLFetcher {
     /// without a bound a blocked network would spin until the 20s timeout of
     /// whichever hop happened to be in flight — and the "redirect loop" that the
     /// Safari fallback exists for would never actually be reported as one.
-    static let maxRedirectHops = 5
+    /// Go's `http.Client` stops at 10 (`defaultMaxRedirects`); matching it means a
+    /// legitimate chain is never cut short by our own limit.
+    static let maxRedirectHops = 10
 
     let baseURL: URL
     let timeout: TimeInterval
@@ -76,16 +78,16 @@ struct HTTPFetcher: HTMLFetcher {
         login.setValue(browserUserAgent, forHTTPHeaderField: "User-Agent")
         login.httpBody = form.percentEncodedQuery?.data(using: .utf8)
 
+        // Deliberately no auth verdict on this stage, matching the Go reference:
+        // `FetchHTML` only rejects a login status >= 400 and decides
+        // authentication on the *consumi* response. A URL check here would also be
+        // dominated — a chain that ends back on `/account/login` serves the form,
+        // which the consumi stage detects anyway — while being able to report
+        // "credenziali non valide" for a password that is fine.
         do {
             let (response, _) = try await send(login, session: session, jar: cookies, stage: "login")
             guard response.statusCode < 400 else {
                 throw IliadError.network("login HTTP \(response.statusCode)")
-            }
-            // The post-login redirect lands on the account page; if it lands back
-            // on the login form the credentials were rejected. Go makes the same
-            // check on the *final* URL of the chain (`resp.Request.URL.Path`).
-            if response.url?.path == "/account/login" {
-                throw IliadError.auth("credenziali non valide o sessione non autenticata")
             }
         } catch let error as IliadError {
             throw error

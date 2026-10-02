@@ -20,9 +20,13 @@ final class BootstrapTests: XCTestCase {
         XCTAssertTrue(path.hasSuffix("Library/Application Support/RiepilogoIliad/iliad.db"),
                       "got \(path)")
         XCTAssertTrue(path.hasPrefix(NSHomeDirectory()))
-        // ...and it must be exactly that, or the reset would act on a different
-        // file than the one the app failed to open.
-        XCTAssertEqual(path, try Store.defaultURL().path)
+        // ...and it must sit in exactly the directory `defaultURL()` uses, or the
+        // reset would act on a different file than the one the app failed to
+        // open. Compared against the non-creating form on purpose: calling
+        // `defaultURL()` here would create the very directory this suite has to
+        // leave alone.
+        XCTAssertEqual(URL(fileURLWithPath: path).deletingLastPathComponent().path,
+                       try Store.defaultDirectory(createIfNeeded: false).path)
     }
 
     /// Hermeticity is verified outside the suite too — see
