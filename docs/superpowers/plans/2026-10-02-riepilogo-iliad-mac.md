@@ -2731,7 +2731,7 @@ struct HistoryPoint: Identifiable, Equatable {
 /// Replaced with the real implementation in Task 11.
 func dailyHistoryPoints(readings: [Reading], timeZone: TimeZone) -> [HistoryPoint] { [] }
 ```
-Add `var storeHandle: Store? { nil }` to `RefreshCoordinator` now, and replace it in Task 11 with `var storeHandle: Store { store }`. (Both are small, explicit edits; the plan carries them forward.)
+Add `nonisolated var storeHandle: Store? { nil }` to `RefreshCoordinator` now, and replace it in Task 11 with `nonisolated var storeHandle: Store { store }` (Swift 6: an actor-isolated accessor cannot be read from the main actor). Also replaced in Task 11: `AppModel.historyPoints` becomes `async` and reads the store off the main actor. (These are small, explicit edits; the plan carries them forward.)
 
 - [ ] **Step 6: Implement views**
 
@@ -3023,7 +3023,17 @@ func dailyHistoryPoints(readings: [Reading], timeZone: TimeZone) -> [HistoryPoin
 
 In `RefreshCoordinator.swift`, replace the stub with:
 ```swift
-var storeHandle: Store? { store }
+nonisolated var storeHandle: Store { store }
+```
+
+In `AppModel.swift`, replace the stub `historyPoints` (currently `guard let store = coordinator.storeHandle` + a synchronous read) with an async, off-main-actor read:
+```swift
+func historyPoints(account: String, days: Int = 30) async -> [HistoryPoint] {
+    let store = coordinator.storeHandle
+    let since = Date().addingTimeInterval(-Double(days) * 86400)
+    let readings = (try? await Task.detached { try store.history(account: account, since: since) }.value) ?? []
+    return dailyHistoryPoints(readings: readings, timeZone: TimeZone(identifier: "Europe/Rome") ?? .current)
+}
 ```
 
 - [ ] **Step 4: Implement `HistoryWindow.swift`**
@@ -3037,7 +3047,7 @@ struct HistoryWindow: View {
     @State private var selected: String = ""
 
     private var accounts: [String] { model.cards.map(\.account) }
-    private var points: [HistoryPoint] { model.historyPoints(account: selected) }
+    @State private var points: [HistoryPoint] = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -3065,6 +3075,7 @@ struct HistoryWindow: View {
         }
         .padding(16)
         .frame(minWidth: 560, minHeight: 420)
+        .task(id: selected) { points = await model.historyPoints(account: selected) }
     }
 }
 ```
