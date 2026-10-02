@@ -47,6 +47,12 @@ enum FetchPath: String, Codable, Sendable {
     case direct, safari
 }
 
+/// What a refresh cycle decided to notify about. `.none` means "say nothing";
+/// the other cases map one-to-one to the user-facing alerts.
+enum NotificationDecision: Equatable, Sendable {
+    case none, low, exhausted, renewed
+}
+
 enum IliadError: Error, Equatable, Sendable {
     case auth(String)
     case parse(String)
