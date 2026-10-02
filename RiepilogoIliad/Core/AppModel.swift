@@ -50,15 +50,34 @@ func sortEntries(_ entries: [Entry], today: Date = today(in: TimeZone(identifier
     }
 }
 
-/// Replaced with the real implementation in Task 11.
+/// One point per local calendar day, plotted at that day's midnight.
 struct HistoryPoint: Identifiable, Equatable {
     var id: Date { date }
     var date: Date
     var remainingGB: Double
 }
 
-/// Replaced with the real implementation in Task 11.
-func dailyHistoryPoints(readings: [Reading], timeZone: TimeZone) -> [HistoryPoint] { [] }
+/// Collapses a run of readings into one point per local day, keeping the latest
+/// reading of each day. `readings` must be ascending by `fetchedAt` (which is
+/// what `Store.history` returns), so the last write for a day is its newest one
+/// while `order` preserves first-seen day ordering. A day whose newest reading
+/// has no `remainingGB` is dropped: a nil cannot be plotted, and falling back to
+/// an older reading of the same day would report a quota figure already stale.
+func dailyHistoryPoints(readings: [Reading], timeZone: TimeZone) -> [HistoryPoint] {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = timeZone
+    var byDay: [Date: Reading] = [:]
+    var order: [Date] = []
+    for reading in readings {
+        let day = calendar.startOfDay(for: reading.fetchedAt.date)
+        if byDay[day] == nil { order.append(day) }
+        byDay[day] = reading
+    }
+    return order.compactMap { day in
+        guard let reading = byDay[day], let remaining = reading.remainingGB else { return nil }
+        return HistoryPoint(date: day, remainingGB: remaining)
+    }
+}
 
 @MainActor
 @Observable
@@ -119,9 +138,13 @@ final class AppModel {
         snapshot = await coordinator.snapshot()
     }
 
-    func historyPoints(account: String, days: Int = 30) -> [HistoryPoint] {
-        guard let store = coordinator.storeHandle else { return [] }
-        let readings = (try? store.history(account: account, since: Date().addingTimeInterval(-Double(days) * 86400))) ?? []
+    /// Reads one account's history off the main actor: the SQLite query is
+    /// synchronous, so it runs on a detached task and the UI only ever awaits
+    /// the aggregated result.
+    func historyPoints(account: String, days: Int = 30) async -> [HistoryPoint] {
+        let store = coordinator.storeHandle
+        let since = Date().addingTimeInterval(-Double(days) * 86400)
+        let readings = (try? await Task.detached { try store.history(account: account, since: since) }.value) ?? []
         return dailyHistoryPoints(readings: readings, timeZone: TimeZone(identifier: "Europe/Rome") ?? .current)
     }
 }

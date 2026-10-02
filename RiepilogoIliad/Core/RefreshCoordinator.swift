@@ -91,9 +91,9 @@ actor RefreshCoordinator {
     }
 
     /// Escape hatch for the UI to read history. `nonisolated` so the main-actor
-    /// `AppModel` can reach it. Task 11 replaces this with a direct `store`
-    /// accessor once the history window owns that path.
-    nonisolated var storeHandle: Store? { nil }
+    /// `AppModel` can reach it; `Store` is itself `Sendable`, so handing the
+    /// handle across actors is safe and the caller decides the executor.
+    nonisolated var storeHandle: Store { store }
 
     /// Runs one cycle over every account, sequentially. Returns `false` when a
     /// cycle is already in flight (single-flight: the caller gets a no-op).
