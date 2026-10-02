@@ -29,7 +29,8 @@ servizio `riepilogo-iliad` e una voce per SIM (chiave = id della SIM). "Importa 
 accetta il `config.yaml` della app Go (stesse chiavi `accounts`, `renewal_day`, `refresh_interval`),
 unisce le SIM per nome e scrive le password importate nel Portachiavi. "Importa storico da iliad.db"
 sostituisce il database con quello della app Go (schema identico) e salva il precedente in
-`iliad.db.bak`: dopo l'import **esci e riapri** l'app, perché il file va scambiato a app chiusa.
+`iliad.db.bak`. Il file viene scambiato mentre l'app è aperta, quindi dopo l'import **esci e riapri**:
+la connessione già aperta sul database comincia a fallire dopo lo scambio.
 
 ## Modalità di aggiornamento
 
@@ -49,8 +50,8 @@ La modalità automatica prova prima la connessione diretta e, se bloccata, passa
 Per il fallback serve una volta sola: Safari → Impostazioni → Avanzate → "Mostra funzioni per sviluppatori web",
 poi menu Sviluppo → "Consenti JavaScript dagli eventi Apple". Al primo uso macOS chiederà il permesso di controllare Safari.
 
-Il fallback usa Safari perché è il browser a poter passare dal Wi‑Fi dell'hotspot alla rete mobile:
-lo script apre (o riattiva) Safari, riusa una scheda già aperta su iliad.it o ne crea una su
+Il fallback usa Safari perché è il browser a poter passare dal Wi-Fi dell'hotspot alla rete mobile:
+lo script riusa una scheda già aperta su iliad.it, altrimenti ne apre una nuova su
 `www.iliad.it/account/login`, e da lì esegue la stessa richiesta della app in pagina. Servono quindi
 Safari utilizzabile dall'app e l'opzione JavaScript attiva; senza l'opzione l'app lo segnala e la
 lettura fallisce.
@@ -59,11 +60,11 @@ lettura fallisce.
 
 - Database: `~/Library/Application Support/RiepilogoIliad/iliad.db` (SQLite, schema identico a quello
   della app Go, così lo storico si migra senza conversioni).
-- Le letture più vecchie di **180 giorni** vengono cancellate a ogni aggiornamento.
+- Le letture più vecchie di **180 giorni** vengono cancellate all'avvio dell'app.
 - Impostazioni (SIM, intervallo, modalità, soglia notifiche) in `UserDefaults`; password nel Portachiavi.
 
-La finestra "Storico" mostra il grafico degli ultimi 30 giorni della SIM scelta, con le ultime 14
-letture in tabella.
+La finestra "Storico" mostra il grafico degli ultimi 30 giorni della SIM scelta, con gli ultimi 14 giorni
+in tabella.
 
 ## Note
 
