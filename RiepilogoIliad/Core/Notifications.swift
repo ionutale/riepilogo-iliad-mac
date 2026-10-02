@@ -49,19 +49,12 @@ struct NotificationDecider: NotificationDeciding {
 /// Delivery seam under `NotificationDecider`, so the policy can be exercised
 /// without a live `UNUserNotificationCenter`.
 protocol NotificationPosting: Sendable {
-    /// Announces `decision` for `account`.
-    func post(_ decision: NotificationDecision, for account: Account) async
-
-    /// Same announcement plus the reading that produced it, for posters that
-    /// quote the numbers ("Restano 15 GB"). Defaults to the form above, so a test
-    /// double only has to implement the requirement above.
+    /// Announces `decision` for `account`. The reading is required, not optional:
+    /// the alert text quotes the remaining GB, so there is no honest way to
+    /// announce without it — a data-less overload could only invent a number,
+    /// and an invented alert would still consume the gate's transition and
+    /// suppress the real one.
     func post(_ decision: NotificationDecision, for account: Account, data: AccountData) async
-}
-
-extension NotificationPosting {
-    func post(_ decision: NotificationDecision, for account: Account, data: AccountData) async {
-        await post(decision, for: account)
-    }
 }
 
 /// Transition-based suppression: a state is announced once per account, and only
@@ -111,16 +104,8 @@ final class SystemNotificationPoster: NotificationPosting, Sendable {
             .requestAuthorization(options: [.alert, .sound])
     }
 
-    func post(_ decision: NotificationDecision, for account: Account) async {
-        await deliver(decision, for: account, remainingGB: nil)
-    }
-
     func post(_ decision: NotificationDecision, for account: Account, data: AccountData) async {
-        await deliver(decision, for: account, remainingGB: data.remainingGB)
-    }
-
-    private func deliver(_ decision: NotificationDecision, for account: Account, remainingGB: Double?) async {
-        guard let body = body(for: decision, account: account, remainingGB: remainingGB) else { return }
+        guard let body = body(for: decision, account: account, remainingGB: data.remainingGB) else { return }
         // An unauthorized centre makes `add` fail. Ask first: the transition must
         // not be consumed by an announcement that could never be delivered, or the
         // user would never hear about it after granting permission later.

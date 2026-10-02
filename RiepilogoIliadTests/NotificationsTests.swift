@@ -3,15 +3,26 @@ import XCTest
 
 /// Stands in for `SystemNotificationPoster`: the decider's delivery seam, so the
 /// tests can assert what it was asked to announce without touching
-/// `UNUserNotificationCenter`.
+/// `UNUserNotificationCenter`. Records the whole forwarded payload, so a decider
+/// that loses the decision, the account or the reading is caught here.
 private final class RecordingPoster: NotificationPosting, @unchecked Sendable {
+    struct Posted: Equatable {
+        var decision: NotificationDecision
+        var accountID: UUID
+        var accountName: String
+        var remainingGB: Double?
+    }
+
     private let lock = NSLock()
-    private var _posted: [NotificationDecision] = []
+    private var _posted: [Posted] = []
 
-    var posted: [NotificationDecision] { lock.withLock { _posted } }
+    var posted: [Posted] { lock.withLock { _posted } }
 
-    func post(_ decision: NotificationDecision, for account: Account) async {
-        lock.withLock { _posted.append(decision) }
+    func post(_ decision: NotificationDecision, for account: Account, data: AccountData) async {
+        lock.withLock {
+            _posted.append(Posted(decision: decision, accountID: account.id,
+                                  accountName: account.name, remainingGB: data.remainingGB))
+        }
     }
 }
 
@@ -119,13 +130,19 @@ final class NotificationsTests: XCTestCase {
 
     // MARK: - Delivery seam
 
+    /// The decider must forward the real payload, not just "something happened":
+    /// a poster that received a fabricated reading would announce a wrong number.
     func testDeciderForwardsToInjectedPoster() async {
         let poster = RecordingPoster()
         let decider = NotificationDecider(thresholdPercent: 10, poster: poster)
-        let decision = decider.decide(previous: data(remaining: 50), current: data(remaining: 15), account: account)
+        let current = data(remaining: 15)
+        let decision = decider.decide(previous: data(remaining: 50), current: current, account: account)
         XCTAssertEqual(decision, .low)
-        await decider.post(decision, account: account, data: data(remaining: 15))
-        XCTAssertEqual(poster.posted, [.low])
+        await decider.post(decision, account: account, data: current)
+        XCTAssertEqual(poster.posted, [RecordingPoster.Posted(decision: .low,
+                                                             accountID: account.id,
+                                                             accountName: "SIM 1",
+                                                             remainingGB: 15)])
     }
 
     func testDeciderDoesNotPostNone() async {
