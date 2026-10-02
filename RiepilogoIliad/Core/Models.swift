@@ -126,6 +126,22 @@ struct Reading: Codable, FetchableRecord, PersistableRecord, Identifiable, Senda
     var periodEnd: Day?
 
     static let databaseTableName = "readings"
+
+    /// The Go app stores snake_case columns; GRDB maps coding keys straight to
+    /// column names, so the names must be spelled out. GRDB's own
+    /// `.convertFromSnakeCase` is not an option: it would ask for `usedGb`,
+    /// not `usedGB`.
+    enum CodingKeys: String, CodingKey {
+        case id, account, ok, error, phone, offer
+        case fetchedAt = "fetched_at"
+        case usedGB = "used_gb"
+        case remainingGB = "remaining_gb"
+        case allowanceGB = "allowance_gb"
+        case creditEUR = "credit_eur"
+        case renewalDate = "renewal_date"
+        case periodStart = "period_start"
+        case periodEnd = "period_end"
+    }
 }
 
 extension Reading {
