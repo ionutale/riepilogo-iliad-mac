@@ -108,4 +108,29 @@ final class HTTPFetcherTests: XCTestCase {
         XCTAssertEqual(seenCookies.value["alice.test"], "session=alice.test")
         XCTAssertEqual(seenCookies.value["bob.test"], "session=bob.test")
     }
+
+    /// Regression: `URLSessionConfiguration.copy()` shares the base
+    /// configuration's `HTTPCookieStorage` *object*, so without a fresh store
+    /// every fetch reuses one cookie jar and account B's login POST carries
+    /// account A's session cookie. The `MockURLProtocol` bypasses URLSession's
+    /// cookie machinery entirely, so isolation is asserted on the configuration
+    /// directly rather than end-to-end.
+    func testEachFetchGetsIsolatedCookieStorage() throws {
+        let base = mockConfig()
+        let baseStorage = base.httpCookieStorage
+
+        let a = HTTPFetcher.makeIsolatedConfiguration(from: base, timeout: 5)
+        let b = HTTPFetcher.makeIsolatedConfiguration(from: base, timeout: 5)
+
+        let aStorage = try XCTUnwrap(a.httpCookieStorage)
+        let bStorage = try XCTUnwrap(b.httpCookieStorage)
+
+        XCTAssertFalse(aStorage === bStorage, "each fetch must get its own cookie storage")
+        XCTAssertFalse(aStorage === baseStorage, "must not reuse the base configuration's storage")
+        XCTAssertFalse(bStorage === baseStorage, "must not reuse the base configuration's storage")
+        XCTAssertEqual(a.timeoutIntervalForRequest, 5)
+        XCTAssertEqual(b.timeoutIntervalForRequest, 5)
+
+        XCTAssertTrue(base.httpCookieStorage === baseStorage, "base configuration must not be mutated")
+    }
 }

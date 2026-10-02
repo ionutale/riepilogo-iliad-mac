@@ -7,8 +7,11 @@ protocol HTMLFetcher: Sendable {
     func fetchHTML(for account: FetchedAccount) async throws -> String
 }
 
-/// Direct HTTP fetch: login POST + consumi GET with an ephemeral,
-/// per-fetch session (cookies never leak between accounts).
+/// Direct HTTP fetch: login POST + consumi GET with an ephemeral, per-fetch
+/// session. Every fetch gets a brand-new `HTTPCookieStorage`, because
+/// `URLSessionConfiguration.copy()` shares the base configuration's storage
+/// object; without the fresh store a second account's login POST would carry
+/// the first account's session cookie.
 struct HTTPFetcher: HTMLFetcher {
     let baseURL: URL
     let timeout: TimeInterval
@@ -22,17 +25,27 @@ struct HTTPFetcher: HTMLFetcher {
         self.configuration = configuration
     }
 
-    func fetchHTML(for account: FetchedAccount) async throws -> String {
-        let config = configuration.copy() as! URLSessionConfiguration
+    /// Builds the configuration for a single fetch: a copy of `base` with the
+    /// request timeout applied and a **fresh** cookie storage, so cookies are
+    /// scoped to one fetch and never shared between accounts.
+    static func makeIsolatedConfiguration(from base: URLSessionConfiguration,
+                                          timeout: TimeInterval) -> URLSessionConfiguration {
+        let config = base.copy() as! URLSessionConfiguration
         config.timeoutIntervalForRequest = timeout
         config.httpCookieAcceptPolicy = .always
         config.httpShouldSetCookies = true
+        config.httpCookieStorage = HTTPCookieStorage()
+        return config
+    }
+
+    func fetchHTML(for account: FetchedAccount) async throws -> String {
+        let config = Self.makeIsolatedConfiguration(from: configuration, timeout: timeout)
         let session = URLSession(configuration: config)
         defer { session.invalidateAndCancel() }
 
-        // Per-fetch cookie jar. URLSession's automatic cookie injection is
-        // performed by its HTTP protocol handler, which a custom URLProtocol
-        // (and some proxies) bypasses, so cookies are propagated explicitly.
+        // Second cookie mechanism, needed because URLSession's automatic
+        // injection lives in its HTTP protocol handler, which a custom
+        // URLProtocol bypasses. Scoped to this call only.
         let cookies = CookieJar()
 
         var form = URLComponents()
