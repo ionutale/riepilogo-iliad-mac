@@ -1,0 +1,84 @@
+# Riepilogo Iliad (macOS)
+
+App nativa per macOS che mostra quanto traffico resta alle SIM Iliad Italia, con notifiche e storico.
+
+## Requisiti
+
+- macOS 15 o successivo.
+- Xcode con Swift 6 (sviluppata e testata con Xcode 27).
+- [XcodeGen](https://github.com/yonaskolb/XcodeGen), per generare il progetto: `brew install xcodegen`.
+
+Il `.xcodeproj` non è committato: `make generate` lo ricrea da `project.yml`.
+
+## Build e avvio
+
+1. `make generate && make build`
+2. `make run` (oppure apri `build/Build/Products/Debug/RiepilogoIliad.app`)
+
+I test si lanciano con `make test`.
+
+## Prima configurazione
+
+1. Apri il popover dall'icona nella barra dei menu → ingranaggio (Impostazioni).
+2. Aggiungi le SIM (nome, ID utente, password). Le password finiscono nel Portachiavi.
+3. (Opzionale) "Importa account da config.yaml" e "Importa storico da iliad.db" per migrare dalla app Go.
+4. Attiva "Apri al login" e "Notifiche" se vuoi.
+
+Le password non passano mai da `UserDefaults` né dal database: vanno nel Portachiavi di login, con
+servizio `riepilogo-iliad` e una voce per SIM (chiave = id della SIM). "Importa account da config.yaml"
+accetta il `config.yaml` della app Go (stesse chiavi `accounts`, `renewal_day`, `refresh_interval`),
+unisce le SIM per nome e scrive le password importate nel Portachiavi. "Importa storico da iliad.db"
+sostituisce il database con quello della app Go (schema identico) e salva il precedente in
+`iliad.db.bak`: dopo l'import **esci e riapri** l'app, perché il file va scambiato a app chiusa.
+
+## Modalità di aggiornamento
+
+La modalità si sceglie in Impostazioni → Aggiornamento → "Modalità":
+
+- **Automatico (diretto → Safari)** (predefinita): prima prova la connessione diretta via HTTP; se la
+  rete la blocca passa da Safari. Il fallback scatta **solo** sugli errori di rete: un errore di
+  autenticazione o di parsing non lo attiva, perché fallirebbe uguale.
+- **Solo diretto (HTTP)**: niente Safari, mai.
+- **Solo Safari**: niente HTTP diretto.
+
+L'intervallo si sceglie con lo stesso picker: 1, 2, 4, 6, 8, 12 o 24 ore (4 ore di default, minimo 1 ora).
+
+## Rete bloccata (hotspot Iliad)
+
+La modalità automatica prova prima la connessione diretta e, se bloccata, passa da Safari.
+Per il fallback serve una volta sola: Safari → Impostazioni → Avanzate → "Mostra funzioni per sviluppatori web",
+poi menu Sviluppo → "Consenti JavaScript dagli eventi Apple". Al primo uso macOS chiederà il permesso di controllare Safari.
+
+Il fallback usa Safari perché è il browser a poter passare dal Wi‑Fi dell'hotspot alla rete mobile:
+lo script apre (o riattiva) Safari, riusa una scheda già aperta su iliad.it o ne crea una su
+`www.iliad.it/account/login`, e da lì esegue la stessa richiesta della app in pagina. Servono quindi
+Safari utilizzabile dall'app e l'opzione JavaScript attiva; senza l'opzione l'app lo segnala e la
+lettura fallisce.
+
+## Dove stanno i dati
+
+- Database: `~/Library/Application Support/RiepilogoIliad/iliad.db` (SQLite, schema identico a quello
+  della app Go, così lo storico si migra senza conversioni).
+- Le letture più vecchie di **180 giorni** vengono cancellate a ogni aggiornamento.
+- Impostazioni (SIM, intervallo, modalità, soglia notifiche) in `UserDefaults`; password nel Portachiavi.
+
+La finestra "Storico" mostra il grafico degli ultimi 30 giorni della SIM scelta, con le ultime 14
+letture in tabella.
+
+## Note
+
+- Nessun server locale: l'app parla solo con iliad.it (direttamente o tramite Safari).
+- Progetto non affiliato a Iliad Italia S.p.A.
+
+## Checklist di accettazione manuale
+
+Da fare a mano sulla Mac, con `make run`:
+
+1. `make run` → icona nella barra dei menu; il popover mostra le SIM (dopo il primo aggiornamento).
+2. Sull'hotspot: il primo aggiornamento ricade su Safari (compare/attiva una scheda su iliad.it) e i dati arrivano.
+3. Su rete normale (o con Modalità = "Solo diretto (HTTP)"): l'aggiornamento usa HTTP diretto, Safari intatto.
+4. "Verifica account" mostra una riga per SIM con l'esito e il trasporto usato (`direct`/`safari`).
+5. Forza una lettura bassa (o alza la soglia) → arriva una notifica.
+6. Attiva "Apri al login" → l'app compare in Impostazioni di Sistema → Generali → Elementi di login.
+7. "Importa storico" da iliad.db → il grafico dello storico mostra i dati della app Go.
+8. Esci e riapri → gli ultimi dati compaiono subito, l'aggiornamento parte in background.
