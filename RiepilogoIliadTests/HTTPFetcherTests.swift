@@ -110,11 +110,13 @@ final class HTTPFetcherTests: XCTestCase {
     }
 
     /// Regression: `URLSessionConfiguration.copy()` shares the base
-    /// configuration's `HTTPCookieStorage` *object*, so without a fresh store
-    /// every fetch reuses one cookie jar and account B's login POST carries
-    /// account A's session cookie. The `MockURLProtocol` bypasses URLSession's
-    /// cookie machinery entirely, so isolation is asserted on the configuration
-    /// directly rather than end-to-end.
+    /// configuration's `HTTPCookieStorage` *object*, so without a per-fetch
+    /// store every fetch reuses one cookie jar and account B's login POST
+    /// carries account A's session cookie. The replacement storage must also be
+    /// functional — a bare `HTTPCookieStorage()` is inert, so identity checks
+    /// alone would not catch that. The `MockURLProtocol` bypasses URLSession's
+    /// cookie machinery entirely, so isolation is asserted on the
+    /// configuration directly rather than end-to-end.
     func testEachFetchGetsIsolatedCookieStorage() throws {
         let base = mockConfig()
         let baseStorage = base.httpCookieStorage
@@ -132,5 +134,18 @@ final class HTTPFetcherTests: XCTestCase {
         XCTAssertEqual(b.timeoutIntervalForRequest, 5)
 
         XCTAssertTrue(base.httpCookieStorage === baseStorage, "base configuration must not be mutated")
+
+        // The per-fetch storage must actually work, not merely be a distinct
+        // object: a bare `HTTPCookieStorage()` is inert and would pass the
+        // identity checks above while silently storing nothing.
+        let url = URL(string: "https://example.test/")!
+        let cookie = HTTPCookie(properties: [.name: "session", .value: "a",
+                                             .domain: "example.test", .path: "/"])!
+        aStorage.setCookie(cookie)
+        XCTAssertEqual(aStorage.cookies(for: url)?.first?.value, "a")
+        // `cookies(for:)` returns an empty array (not nil) when there are none,
+        // so assert emptiness rather than nil.
+        let bCookies = bStorage.cookies(for: url) ?? []
+        XCTAssertTrue(bCookies.isEmpty, "cookie storage must be scoped to one fetch")
     }
 }

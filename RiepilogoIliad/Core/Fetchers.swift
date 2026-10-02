@@ -8,10 +8,11 @@ protocol HTMLFetcher: Sendable {
 }
 
 /// Direct HTTP fetch: login POST + consumi GET with an ephemeral, per-fetch
-/// session. Every fetch gets a brand-new `HTTPCookieStorage`, because
-/// `URLSessionConfiguration.copy()` shares the base configuration's storage
-/// object; without the fresh store a second account's login POST would carry
-/// the first account's session cookie.
+/// session. Each fetch is given its own functional ephemeral cookie storage,
+/// so cookies stored during one fetch are invisible to every other fetch — that
+/// is what keeps accounts from bleeding into each other. The base
+/// configuration's own storage is deliberately ignored in favour of the
+/// per-fetch one.
 struct HTTPFetcher: HTMLFetcher {
     let baseURL: URL
     let timeout: TimeInterval
@@ -26,15 +27,20 @@ struct HTTPFetcher: HTMLFetcher {
     }
 
     /// Builds the configuration for a single fetch: a copy of `base` with the
-    /// request timeout applied and a **fresh** cookie storage, so cookies are
-    /// scoped to one fetch and never shared between accounts.
+    /// request timeout applied and its own ephemeral cookie storage, so cookies
+    /// stored during this fetch cannot reach any other fetch.
+    ///
+    /// `.ephemeral.httpCookieStorage` is used rather than `HTTPCookieStorage()`:
+    /// each access yields a fresh, working in-memory storage, whereas a bare
+    /// `HTTPCookieStorage()` is inert — it neither retains nor returns cookies.
+    /// The base configuration's storage is intentionally discarded.
     static func makeIsolatedConfiguration(from base: URLSessionConfiguration,
                                           timeout: TimeInterval) -> URLSessionConfiguration {
         let config = base.copy() as! URLSessionConfiguration
         config.timeoutIntervalForRequest = timeout
         config.httpCookieAcceptPolicy = .always
         config.httpShouldSetCookies = true
-        config.httpCookieStorage = HTTPCookieStorage()
+        config.httpCookieStorage = URLSessionConfiguration.ephemeral.httpCookieStorage
         return config
     }
 
@@ -43,9 +49,11 @@ struct HTTPFetcher: HTMLFetcher {
         let session = URLSession(configuration: config)
         defer { session.invalidateAndCancel() }
 
-        // Second cookie mechanism, needed because URLSession's automatic
-        // injection lives in its HTTP protocol handler, which a custom
-        // URLProtocol bypasses. Scoped to this call only.
+        // Explicit cookie propagation for the login -> consumi hop. The
+        // per-fetch storage above handles the real network path; storage-based
+        // injection never runs when a custom URLProtocol is in play (the test
+        // double bypasses URLSession's cookie machinery entirely), so the
+        // session cookie is also carried explicitly here. Scoped to this call.
         let cookies = CookieJar()
 
         var form = URLComponents()
