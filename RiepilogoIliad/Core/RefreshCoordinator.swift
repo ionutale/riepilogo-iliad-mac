@@ -25,8 +25,12 @@ func redactedError(_ message: String, password: String?, username: String? = nil
     return String(flattened.prefix(300)) + "…"
 }
 
-struct CheckResult: Sendable {
+struct CheckResult: Identifiable, Sendable {
     var account: String
+    /// The account name is how the coordinator keys a SIM, so it also
+    /// identifies the row in the Settings check-results table (`TableColumn`
+    /// requires `Identifiable`).
+    var id: String { account }
     var ok: Bool
     var path: FetchPath?
     var usedGB: Double?

@@ -38,7 +38,10 @@ struct RiepilogoIliadApp: App {
         }
         .menuBarExtraStyle(.window)
 
-        // The Settings scene is added in Task 12.
+        Settings {
+            if let model { SettingsView().environment(model) }
+        }
+
         Window("Storico", id: "history") {
             if let model { HistoryWindow().environment(model) }
         }
