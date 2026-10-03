@@ -39,10 +39,10 @@ jobs:
           languages: swift
           build-mode: manual
 
-      - name: Build
+      - name: Build (app + tests)
         run: |
           xcodebuild -project RiepilogoIliad.xcodeproj -scheme RiepilogoIliad \
-            -configuration Debug -derivedDataPath build build
+            -configuration Debug -derivedDataPath build build-for-testing
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
