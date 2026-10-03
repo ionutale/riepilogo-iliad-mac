@@ -63,7 +63,6 @@ final class AppIntegrationTests: XCTestCase {
     private var model: AppModel?
 
     override func setUp() async throws {
-        try await super.setUp()
         suiteName = "integration-\(UUID().uuidString)"
         settings = AppSettings(defaults: UserDefaults(suiteName: suiteName)!)
         storePath = FileManager.default.temporaryDirectory
@@ -79,7 +78,6 @@ final class AppIntegrationTests: XCTestCase {
         model = nil
         UserDefaults(suiteName: suiteName)?.removePersistentDomain(forName: suiteName)
         if let storePath { try? FileManager.default.removeItem(atPath: storePath) }
-        try await super.tearDown()
     }
 
     private func makeModel(_ direct: any HTMLFetcher, accounts: [Account],
