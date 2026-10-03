@@ -20,6 +20,9 @@ nell'app (app-hosted) e `RiepilogoIliadApp` salta del tutto l'avvio quando gira 
 quindi `make test` non apre il database in `Application Support`, non accede al Portachiavi,
 non tocca Safari e non mostra icone né richieste di notifiche.
 
+L'icona dell'app («SIM + anello dati») è generata da `scripts/make-app-icon.swift`:
+per rigenerarla, `make icon`.
+
 ## Prima configurazione
 
 1. Apri il popover dall'icona nella barra dei menu → ingranaggio (Impostazioni).

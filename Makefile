@@ -1,7 +1,10 @@
-.PHONY: generate build test run clean
+.PHONY: generate icon build test run clean
 
 generate:
 	xcodegen generate
+
+icon:
+	swift scripts/make-app-icon.swift
 
 build: generate
 	xcodebuild -project RiepilogoIliad.xcodeproj -scheme RiepilogoIliad \
