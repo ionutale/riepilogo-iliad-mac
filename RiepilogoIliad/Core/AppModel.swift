@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Observation
 
@@ -138,6 +139,10 @@ final class AppModel {
     /// Internal rather than private so the reschedule behaviour is observable
     /// from tests without waiting out a one-hour sleep.
     private(set) var timerTask: Task<Void, Never>?
+    /// Token for the `NSWorkspace` wake observer, or nil while unregistered. Held
+    /// so `stopObservingWake()` can detach it and so a second `observeWake()` is
+    /// a no-op rather than a second cycle per wake.
+    private var wakeObserver: NSObjectProtocol?
 
     /// Stops the sleep loop. Used by tests (and the only correct way to shut the
     /// loop down without waiting out its interval).
@@ -176,6 +181,7 @@ final class AppModel {
     }
 
     func start() {
+        observeWake()
         Task {
             // Notifications need a granted centre before the first cycle can post;
             // asked once at launch (and idempotently) so a revoked-then-restored
@@ -213,6 +219,67 @@ final class AppModel {
 
     func refreshNow() {
         Task { await runRefreshCycle() }
+    }
+
+    // MARK: - Post-wake refresh (spec §5)
+
+    /// Registers the wake observer that closes the last hole in the refresh
+    /// triggers (spec §5: "and after wake if stale (2× interval)").
+    ///
+    /// Kept out of `start()`'s body so a test can install the observer without
+    /// also launching the start-up cycle, and idempotent: two registrations would
+    /// mean two cycle attempts per wake, the second swallowed by single-flight
+    /// while still flipping `isRefreshing` twice.
+    func observeWake() {
+        guard wakeObserver == nil else { return }
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            // `queue: .main` delivers on the main thread, so the main actor is
+            // already current: no Task hop, and the refresh starts before
+            // `post()` returns.
+            MainActor.assumeIsolated { self?.wakeRefreshIfStale() }
+        }
+    }
+
+    /// Detaches the wake observer. Nothing calls this in production — the model
+    /// lives as long as the app — but a test must not leave an observer bound to
+    /// a model it is finished with.
+    func stopObservingWake() {
+        guard let wakeObserver else { return }
+        NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
+        self.wakeObserver = nil
+    }
+
+    /// Refreshes on wake, but only when the last completed cycle is stale.
+    ///
+    /// This is the case spec §5 is about: the timer's sleep survives a suspend, so
+    /// a Mac that sleeps through (say) a 4h interval would show pre-sleep numbers
+    /// for the rest of the night — the timer simply resumes afterwards. A wake
+    /// that finds fresh data stays silent instead, because the scheduled cycle is
+    /// still ahead of it and a second one would fight it for the Safari tab.
+    private func wakeRefreshIfStale() {
+        guard Self.shouldRefreshAfterWake(lastCycle: snapshot.lastCycle,
+                                          now: Date(),
+                                          interval: settings.refreshInterval) else { return }
+        // Same entry point as the timer and "Aggiorna ora", so the single-flight
+        // guard, `isRefreshing` and the post-cycle reload all apply.
+        refreshNow()
+    }
+
+    /// Whether a wake should trigger a refresh: no cycle has completed yet, or the
+    /// last one is older than two intervals.
+    ///
+    /// Measured on `snapshot.lastCycle` — the last *completed* cycle — and not on
+    /// an entry's `lastAttempt`: an attempt that failed a minute ago left the
+    /// figures on screen exactly as they were, so it is not evidence of
+    /// freshness. The comparison is strict, the same bar as the `stale` badge, so
+    /// a card never reads "dati non aggiornati" while a wake is being skipped as
+    /// still fresh.
+    nonisolated static func shouldRefreshAfterWake(lastCycle: Date?, now: Date,
+                                                    interval: TimeInterval) -> Bool {
+        guard let lastCycle else { return true }
+        return now.timeIntervalSince(lastCycle) > 2 * interval
     }
 
     /// One cycle plus the post-cycle reload, bracketed by `isRefreshing` so the

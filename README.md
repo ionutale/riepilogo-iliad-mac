@@ -58,6 +58,11 @@ L'intervallo si sceglie con lo stesso picker: 1, 2, 4, 6, 8, 12 o 24 ore (4 ore 
 Cambiarlo prende effetto subito: l'attesa in corso viene annullata e riparte con il nuovo intervallo,
 senza aspettare la fine del sonno precedente.
 
+L'app controlla anche quando il Mac si risveglia: se l'ultimo aggiornamento risale a più di due intervalli
+lo rilancia subito, altrimenti non fa nulla e lascia lavorare il timer. Serve al portatile che dorme
+più di un intervallo — l'attesa in corso riprende al risveglio, ma senza questo controllo i dati
+mostrati sarebbero vecchi.
+
 "Verifica account" è disattivato mentre un aggiornamento è in corso: i due percorsi userebbero la
 stessa scheda di Safari, e il logout della verifica invaliderebbe la sessione dell'aggiornamento
 facendo segnalare un falso "credenziali non valide". Se capita comunque, la verifica risponde

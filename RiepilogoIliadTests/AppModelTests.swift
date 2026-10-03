@@ -98,4 +98,49 @@ final class AppModelTests: XCTestCase {
         let entry = readEntry(failed: true, goodAge: 100 * 3600, error: "timeout")
         XCTAssertEqual(entryBadge(for: entry, now: now(), interval: 3600), .error("timeout"))
     }
+
+    // MARK: - Post-wake staleness (spec §5)
+
+    /// No completed cycle at all — the start-up cycle has not published a
+    /// snapshot yet — is stale by definition: there is nothing on screen to
+    /// defend.
+    func testWakeRefreshesWithoutAnyCompletedCycle() {
+        XCTAssertTrue(AppModel.shouldRefreshAfterWake(lastCycle: nil, now: now(), interval: 3600),
+                      "no cycle yet means the figures on screen are whatever launch left behind")
+    }
+
+    /// The case the wake hook exists for: a Mac that slept through the interval
+    /// resumes the timer's sleep rather than firing it, so without this a laptop
+    /// shows pre-sleep numbers all night.
+    func testWakeRefreshesWhenTheLastCycleIsOlderThanTwoIntervals() {
+        let interval: TimeInterval = 3600
+        XCTAssertTrue(AppModel.shouldRefreshAfterWake(
+            lastCycle: now(-(2 * interval + 1)), now: now(), interval: interval))
+    }
+
+    /// Inside the bar the timer is still ahead of the data, and a second cycle
+    /// would only fight the scheduled one for the Safari tab.
+    func testWakeDoesNotRefreshWithinTwoIntervals() {
+        let interval: TimeInterval = 3600
+        XCTAssertFalse(AppModel.shouldRefreshAfterWake(
+            lastCycle: now(-(2 * interval - 1)), now: now(), interval: interval))
+    }
+
+    /// Exactly 2× is not stale — the same strict `>` the badge uses, so a card
+    /// never says "dati non aggiornati" while a wake is being skipped as fresh.
+    func testWakeDoesNotRefreshAtExactlyTwoIntervals() {
+        let interval: TimeInterval = 3600
+        XCTAssertFalse(AppModel.shouldRefreshAfterWake(
+            lastCycle: now(-2 * interval), now: now(), interval: interval))
+    }
+
+    /// The bar scales with the configured interval: the same 3h-old cycle is fresh
+    /// at the 24h setting and stale at 1h. Nothing here is pinned to the 4h default.
+    func testWakeBarFollowsTheConfiguredInterval() {
+        let threeHours: TimeInterval = 3 * 3600
+        XCTAssertFalse(AppModel.shouldRefreshAfterWake(
+            lastCycle: now(-threeHours), now: now(), interval: 24 * 3600))
+        XCTAssertTrue(AppModel.shouldRefreshAfterWake(
+            lastCycle: now(-threeHours), now: now(), interval: 3600))
+    }
 }

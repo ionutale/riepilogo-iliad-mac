@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 @testable import RiepilogoIliad
 
@@ -74,6 +75,7 @@ final class AppIntegrationTests: XCTestCase {
         // Leave no pending sleep behind: the model's timer task would outlive the
         // test and keep the coordinator alive.
         model?.cancelTimer()
+        model?.stopObservingWake()
         model = nil
         UserDefaults(suiteName: suiteName)?.removePersistentDomain(forName: suiteName)
         if let storePath { try? FileManager.default.removeItem(atPath: storePath) }
@@ -317,5 +319,71 @@ final class AppIntegrationTests: XCTestCase {
         await model.runRefreshCycle()
         XCTAssertFalse(model.hasWarning, "198 GB remaining is not a warning")
         XCTAssertEqual(model.totals.hasData, true)
+    }
+
+    // MARK: - Post-wake refresh (spec §5)
+
+    /// Spec §5's last trigger was unimplemented: nothing observed
+    /// `NSWorkspace.didWakeNotification`, so a Mac that slept through its refresh
+    /// interval kept showing pre-sleep numbers — the timer's pending sleep
+    /// survives a suspend and simply resumes afterwards.
+    ///
+    /// The observer is installed without `start()` (which would kick off the
+    /// start-up cycle and make the state ambiguous), leaving `snapshot.lastCycle`
+    /// nil — the stale case. The gated fetcher makes "a refresh started" an
+    /// observed state rather than a race to win.
+    func testWakeTriggersARefreshWhenTheLastCycleIsStale() async throws {
+        let (gate, continuation) = AsyncStream<Void>.makeStream()
+        let entered = Box(false)
+        let fetcher = GatedFetcher(gate: gate, result: { consumiPage },
+                                  onEnter: { entered.value = true })
+        let model = try makeModel(fetcher, accounts: [account("SIM 1")])
+        XCTAssertNil(model.snapshot.lastCycle)
+        model.observeWake()
+
+        NSWorkspace.shared.notificationCenter.post(
+            name: NSWorkspace.didWakeNotification, object: nil)
+
+        for _ in 0..<200 where !entered.value {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(entered.value, "a wake with no completed cycle must fetch")
+        XCTAssertTrue(model.isRefreshing,
+                      "and must go through the same path as the timer and manual trigger")
+
+        continuation.finish()
+        for _ in 0..<200 where model.isRefreshing {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertFalse(model.isRefreshing)
+        XCTAssertNotNil(model.cards.first?.lastGood, "and the reading must land on the card")
+    }
+
+    /// The other half, and the reason the trigger is conditional: a wake right
+    /// after a completed cycle must not fetch. The scheduled cycle is still ahead
+    /// of it, and on the Safari path a second cycle would race it for the tab.
+    ///
+    /// The observer runs synchronously on the main thread during `post`, so a
+    /// refresh it started would be visible well inside the wait. This cannot pass
+    /// for the wrong reason: the stale case above proves the same notification on
+    /// the same centre does fetch.
+    func testWakeSkipsTheRefreshWhenTheLastCycleIsFresh() async throws {
+        let fetches = Box(0)
+        let counting = StubFetcher {
+            fetches.value += 1
+            return consumiPage
+        }
+        let model = try makeModel(counting, accounts: [account("SIM 1")])
+        await model.runRefreshCycle()
+        XCTAssertEqual(fetches.value, 1, "the cycle that makes the data fresh must have fetched")
+        XCTAssertNotNil(model.snapshot.lastCycle)
+
+        model.observeWake()
+        NSWorkspace.shared.notificationCenter.post(
+            name: NSWorkspace.didWakeNotification, object: nil)
+        try? await Task.sleep(nanoseconds: 300_000_000)
+
+        XCTAssertEqual(fetches.value, 1, "a cycle from seconds ago needs no wake refresh")
+        XCTAssertFalse(model.isRefreshing)
     }
 }
